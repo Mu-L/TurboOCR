@@ -21,6 +21,7 @@
 // best-effort sequence rather than throwing.
 
 #include <array>
+#include <functional>
 #include <vector>
 
 #include "turbo_ocr/common/geometry/box.h"
@@ -60,9 +61,16 @@ split_projection_profile(const std::vector<int> &projection, int min_value,
 //
 // `rects` is taken by const-ref so callers can compute the AABB list
 // once and reuse it across recursive frames.
+//
+// `split` is consulted only for a group that splits on neither axis, which
+// would otherwise be emitted in y order; returning two or more groups (left
+// to right) recurses into each instead. Indices it leaves out are not emitted.
+using ColumnSplitFn =
+    std::function<std::vector<std::vector<int>>(const std::vector<int> &)>;
 void recursive_xy_cut(const std::vector<std::array<int, 4>> &rects,
                       const std::vector<int> &indices,
-                      std::vector<int> &res, int min_gap = 1);
+                      std::vector<int> &res, int min_gap = 1,
+                      const ColumnSplitFn &split = {});
 
 // Top-level entry point. Computes axis-aligned rects from the layout
 // boxes' 4-corner quads and runs recursive_xy_cut. Returns the

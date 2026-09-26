@@ -6,6 +6,9 @@
 
 #include <catch_amalgamated.hpp>
 #include <algorithm>
+#include <cmath>
+#include <numeric>
+#include <string>
 #include <vector>
 
 #include "turbo_ocr/common/serialization/serialization.h"
@@ -299,4 +302,191 @@ TEST_CASE("assign_reading_order_for_results: orphans inside SupplementaryRegion 
   // Top result should come first geometrically.
   CHECK(order[0] == 1);
   CHECK(order[1] == 0);
+}
+
+// ---- Columns the plain cut cannot separate ---------------------------------
+
+namespace {
+
+// Text columns of stacked paragraphs whose lines tilt by `slope` (dy/dx);
+// each column's x drifts by -slope * y like a skewed scan. Paragraphs are
+// staggered per column so no Y gap crosses the whole page.
+struct ColumnPage {
+  std::vector<LayoutBox> layout;
+  std::vector<OCRResultItem> results;
+  std::vector<int> column;  // per result
+};
+
+ColumnPage make_column_page(const std::vector<int> &col_x0, int col_w,
+                            double slope, int para_gap = 24) {
+  constexpr int kParas = 4, kLines = 4, kLineH = 30, kLineStep = 44;
+  const int para_h = kLines * kLineStep;
+  ColumnPage p;
+  for (size_t c = 0; c < col_x0.size(); ++c) {
+    int y = 100 + static_cast<int>(c) * 60;
+    for (int k = 0; k < kParas; ++k) {
+      const int x0 = col_x0[c] + static_cast<int>(std::lround(-slope * (y + para_h / 2)));
+      const int x1 = x0 + col_w;
+      const int lid = static_cast<int>(p.layout.size());
+      p.layout.push_back(make_layout(x0, y, x1, y + para_h));
+      const int dy = static_cast<int>(std::lround(slope * (col_w - 10)));
+      for (int l = 0; l < kLines; ++l) {
+        const int ly = y + l * kLineStep + 6;
+        OCRResultItem r;
+        r.text = "c" + std::to_string(c) + "p" + std::to_string(k) + "l" + std::to_string(l);
+        r.confidence = 0.9f;
+        r.box = Box{{{{{x0 + 5, ly}}, {{x1 - 5, ly + dy}},
+                      {{x1 - 5, ly + dy + kLineH}}, {{x0 + 5, ly + kLineH}}}}};
+        r.layout_id = lid;
+        p.results.push_back(r);
+        p.column.push_back(static_cast<int>(c));
+      }
+      y += para_h + para_gap;
+    }
+  }
+  return p;
+}
+
+bool reads_column_by_column(const std::vector<int> &order, const ColumnPage &p) {
+  for (size_t i = 1; i < order.size(); ++i) {
+    const auto a = static_cast<size_t>(order[i - 1]), b = static_cast<size_t>(order[i]);
+    if (a >= p.column.size() || b >= p.column.size()) continue;
+    if (p.column[b] < p.column[a]) return false;
+    if (p.column[b] == p.column[a] && p.results[b].box[0][1] < p.results[a].box[0][1])
+      return false;
+  }
+  return true;
+}
+
+// Whether the plain cut alone keeps the paragraph boxes column by column.
+bool plain_cut_separates_columns(const ColumnPage &p) {
+  std::vector<std::array<int, 4>> rects;
+  for (const auto &lb : p.layout) {
+    const auto [x0, y0, x1, y1] = turbo_ocr::aabb(lb.box);
+    rects.push_back({x0, y0, x1, y1});
+  }
+  std::vector<int> idx(rects.size());
+  std::iota(idx.begin(), idx.end(), 0);
+  std::vector<int> out;
+  recursive_xy_cut(rects, idx, out);
+  for (size_t i = 1; i < out.size(); ++i)
+    if (out[i] / 4 < out[i - 1] / 4) return false;  // 4 paragraphs per column
+  return true;
+}
+
+} // namespace
+
+TEST_CASE("assign_reading_order_for_results: skewed columns read column by column",
+          "[xy_cut][columns]") {
+  // ~1 degree of skew drifts each column edge ~15 px over the page, past
+  // the 10 px gutters, so no vertical line clears every column.
+  auto p = make_column_page({50, 510, 970}, 450, std::tan(1.0 * 3.14159265358979 / 180.0));
+  REQUIRE_FALSE(plain_cut_separates_columns(p));
+  const auto order = assign_reading_order_for_results(p.results, p.layout);
+  REQUIRE(order.size() == p.results.size());
+  CHECK(reads_column_by_column(order, p));
+}
+
+TEST_CASE("assign_reading_order_for_results: touching columns read column by column",
+          "[xy_cut][columns]") {
+  // Straight page, adjacent column boxes overlapping by 4 px.
+  auto p = make_column_page({50, 496, 942}, 450, 0.0);
+  REQUIRE_FALSE(plain_cut_separates_columns(p));
+  const auto order = assign_reading_order_for_results(p.results, p.layout);
+  REQUIRE(order.size() == p.results.size());
+  CHECK(reads_column_by_column(order, p));
+}
+
+TEST_CASE("assign_reading_order_for_results: a box spanning two columns does not merge them",
+          "[xy_cut][columns]") {
+  // A stamp over the top of both columns bridges the gutter.
+  auto p = make_column_page({50, 540}, 450, 0.0);
+  const int stamp = static_cast<int>(p.layout.size());
+  p.layout.push_back(make_layout(300, 110, 790, 250));
+  p.results.push_back(make_result(320, 160, 770, 190, stamp));
+  const auto order = assign_reading_order_for_results(p.results, p.layout);
+  REQUIRE(order.size() == p.results.size());
+  CHECK(std::find(order.begin(), order.end(), static_cast<int>(p.column.size())) != order.end());
+  CHECK(reads_column_by_column(order, p));  // the stamp's own line is skipped
+}
+
+TEST_CASE("assign_reading_order_for_results: one column of touching paragraphs keeps y order",
+          "[xy_cut][columns]") {
+  auto p = make_column_page({50}, 450, 0.0, /*para_gap=*/-10);
+  const auto order = assign_reading_order_for_results(p.results, p.layout);
+  REQUIRE(order.size() == p.results.size());
+  CHECK(reads_column_by_column(order, p));
+}
+
+// ---- Order predicted by the layout model -----------------------------------
+
+TEST_CASE("assign_reading_order_for_results: the layout model's read_order wins over geometry",
+          "[reading_order][model]") {
+  // Geometry alone reads the left box first; the model says right first.
+  std::vector<LayoutBox> layout = {make_layout(50, 100, 450, 300),
+                                   make_layout(500, 100, 900, 300)};
+  layout[0].read_order = 1;
+  layout[1].read_order = 0;
+  std::vector<OCRResultItem> results = {
+      make_result(60, 110, 440, 140, 0), make_result(60, 150, 440, 180, 0),
+      make_result(510, 110, 890, 140, 1), make_result(510, 150, 890, 180, 1)};
+  const auto order = assign_reading_order_for_results(results, layout);
+  REQUIRE(order == std::vector<int>{2, 3, 0, 1});
+}
+
+TEST_CASE("assign_reading_order_for_results: a line outside every box follows the box above it",
+          "[reading_order][model]") {
+  // Two columns read left then right; the orphan sits under the left box.
+  std::vector<LayoutBox> layout = {make_layout(50, 100, 450, 300),
+                                   make_layout(500, 100, 900, 600)};
+  layout[0].read_order = 0;
+  layout[1].read_order = 1;
+  std::vector<OCRResultItem> results = {
+      make_result(60, 110, 440, 140, 0),
+      make_result(510, 110, 890, 140, 1),
+      make_result(60, 400, 440, 430, -1),  // orphan, left column, below box 0
+      make_result(510, 300, 890, 330, 1)};
+  const auto order = assign_reading_order_for_results(results, layout);
+  REQUIRE(order == std::vector<int>{0, 2, 1, 3});
+}
+
+TEST_CASE("assign_reading_order_for_results: a box without read_order falls back to geometry",
+          "[reading_order][model]") {
+  std::vector<LayoutBox> layout = {make_layout(50, 100, 450, 300),
+                                   make_layout(500, 100, 900, 300)};
+  layout[0].read_order = 1;  // layout[1] has none
+  std::vector<OCRResultItem> results = {make_result(60, 110, 440, 140, 0),
+                                        make_result(510, 110, 890, 140, 1)};
+  const auto order = assign_reading_order_for_results(results, layout);
+  REQUIRE(order == std::vector<int>{0, 1});
+}
+
+TEST_CASE("assign_reading_order_for_results: tied read_order values fall back to geometry",
+          "[reading_order][model]") {
+  // Every box ranked the same carries no order. The right box is listed
+  // first; geometry reads the left one first.
+  std::vector<LayoutBox> layout = {make_layout(500, 100, 900, 300),
+                                   make_layout(50, 100, 450, 300)};
+  layout[0].read_order = 0;
+  layout[1].read_order = 0;
+  std::vector<OCRResultItem> results = {make_result(510, 110, 890, 140, 0),
+                                        make_result(60, 110, 440, 140, 1)};
+  const auto order = assign_reading_order_for_results(results, layout);
+  REQUIRE(order == std::vector<int>{1, 0});
+}
+
+TEST_CASE("assign_reading_order_for_results: paragraphs the model swaps within one column stay top to bottom",
+          "[reading_order][model]") {
+  // Three stacked paragraphs of one column; the model swaps the lower two.
+  std::vector<LayoutBox> layout = {make_layout(50, 100, 450, 200),
+                                   make_layout(50, 210, 450, 310),
+                                   make_layout(50, 320, 450, 420)};
+  layout[0].read_order = 0;
+  layout[1].read_order = 2;
+  layout[2].read_order = 1;
+  std::vector<OCRResultItem> results = {make_result(60, 110, 440, 140, 0),
+                                        make_result(60, 220, 440, 250, 1),
+                                        make_result(60, 330, 440, 360, 2)};
+  const auto order = assign_reading_order_for_results(results, layout);
+  REQUIRE(order == std::vector<int>{0, 1, 2});
 }

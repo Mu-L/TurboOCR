@@ -41,6 +41,7 @@ enum class OrderLabel : int {
   kVision,           // image, table, chart, figure — weighted_distance_insert
   kCrossReference,   // reference, footnote, vision_footnote — reference_insert
   kUnordered,        // aside_text, seal, page number, formula_number — manhattan_insert
+  kCrossLayout,      // body block spanning columns (assigned at sort time) — weighted_distance_insert
 };
 
 // Per-block paragraph-segmentation flags. Computed via get_seg_flag

@@ -157,9 +157,14 @@ double-count.
 
 When `want_reading_order=true` and a non-empty layout exists,
 `assign_layout_ids()` maps each result to its owning cell and
-`assign_reading_order_for_results()` runs PaddleX's XY-cut over the
-layout regions (with synthetic entries for orphan results so unmatched
-detections still land in the right spot).
+`assign_reading_order_for_results()` orders the layout regions by the
+reading order PP-DocLayoutV3 predicts for them (as PaddleOCR-VL does),
+keeping stacked paragraphs of one column top to bottom; lines outside
+every region go after the region directly above them. When the model's
+order is missing or degenerate, PaddleX's XY-cut runs instead, splitting
+touching or skewed columns and setting column-spanning boxes aside (with
+synthetic entries for orphan results so unmatched detections still land
+in the right spot).
 
 ## Text-only path
 

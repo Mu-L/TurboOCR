@@ -176,7 +176,8 @@ split_projection_profile_pmr(const std::pmr::vector<int> &projection,
 void recursive_xy_cut_impl(const std::vector<std::array<int, 4>> &rects,
                            const std::pmr::vector<int> &indices,
                            std::vector<int> &res, int min_gap,
-                           std::pmr::memory_resource *mr, int depth = 0) {
+                           std::pmr::memory_resource *mr,
+                           const ColumnSplitFn &split, int depth = 0) {
   if (indices.empty()) return;
   if (indices.size() == 1) { res.push_back(indices.front()); return; }
 
@@ -278,8 +279,19 @@ void recursive_xy_cut_impl(const std::vector<std::array<int, 4>> &rects,
     }
 
     // 4. If the Y projection is a single segment, no further splitting:
-    // emit current sequence as-is.
+    // emit current sequence as-is, unless the caller can split it.
     if (y_intervals.size() == 1) {
+      if (split && y_sorted_indices.size() > 1) {
+        const auto groups = split(
+            std::vector<int>(y_sorted_indices.begin(), y_sorted_indices.end()));
+        if (groups.size() > 1) {
+          for (const auto &g : groups) {
+            std::pmr::vector<int> gi(g.begin(), g.end(), mr);
+            recursive_xy_cut_impl(rects, gi, res, min_gap, mr, split, depth + 1);
+          }
+          continue;
+        }
+      }
       for (int idx : y_sorted_indices) res.push_back(idx);
       continue;
     }
@@ -308,7 +320,7 @@ void recursive_xy_cut_impl(const std::vector<std::array<int, 4>> &rects,
         for (int idx : row_indices) res.push_back(idx);
         continue;
       }
-      recursive_xy_cut_impl(rects, row_indices, res, min_gap, mr, depth + 1);
+      recursive_xy_cut_impl(rects, row_indices, res, min_gap, mr, split, depth + 1);
     }
   }
 }
@@ -317,7 +329,8 @@ void recursive_xy_cut_impl(const std::vector<std::array<int, 4>> &rects,
 
 void recursive_xy_cut(const std::vector<std::array<int, 4>> &rects,
                       const std::vector<int> &indices,
-                      std::vector<int> &res, int min_gap) {
+                      std::vector<int> &res, int min_gap,
+                      const ColumnSplitFn &split) {
   if (indices.empty()) return;
 
   // Stack-resident initial buffer for the monotonic pool: large enough to
@@ -331,7 +344,7 @@ void recursive_xy_cut(const std::vector<std::array<int, 4>> &rects,
   std::pmr::vector<int> pmr_indices(&pool);
   pmr_indices.reserve(indices.size());
   for (int i : indices) pmr_indices.push_back(i);
-  recursive_xy_cut_impl(rects, pmr_indices, res, min_gap, &pool);
+  recursive_xy_cut_impl(rects, pmr_indices, res, min_gap, &pool, split);
 }
 
 } // namespace turbo_ocr::layout

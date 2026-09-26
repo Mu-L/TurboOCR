@@ -218,7 +218,8 @@ void weighted_distance_insert(const UnsortedBlock &block,
       block.order_label == OrderLabel::kDocTitle ||
       block.order_label == OrderLabel::kParagraphTitle ||
       block.order_label == OrderLabel::kVisionTitle ||
-      block.order_label == OrderLabel::kVision;
+      block.order_label == OrderLabel::kVision ||
+      block.order_label == OrderLabel::kCrossLayout;
   const bool label_is_vision =
       block.order_label == OrderLabel::kVision ||
       block.order_label == OrderLabel::kVisionTitle;
@@ -401,6 +402,7 @@ void match_unsorted_block(const UnsortedBlock &block,
     case OrderLabel::kParagraphTitle:
     case OrderLabel::kVisionTitle:
     case OrderLabel::kVision:
+    case OrderLabel::kCrossLayout:
       weighted_distance_insert(block, sorted_blocks, text_line_width,
                                 direction, layout);
       break;

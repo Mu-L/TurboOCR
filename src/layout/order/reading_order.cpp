@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <array>
 #include <climits>
+#include <cmath>
+#include <limits>
 #include <numeric>
 
 #include "turbo_ocr/common/geometry/box.h"
@@ -11,6 +13,291 @@
 #include "turbo_ocr/layout/blocks/text_line_cluster.h"
 
 namespace turbo_ocr::layout {
+
+namespace {
+
+constexpr double kDegToRad = 3.14159265358979323846 / 180.0;
+// Below this a gutter stays straight enough for the plain cut; above the max
+// it is rotated content, not scanner skew.
+constexpr double kMinSkewRad = 0.1 * kDegToRad;
+constexpr double kMaxSkewRad = 5.0 * kDegToRad;
+constexpr size_t kMinSkewLines = 8;
+// mark_cross_layout is cubic in the worst case.
+constexpr size_t kMaxCrossLayoutBlocks = 256;
+
+// Median top-edge angle of lines long enough to carry one; 0 if unmeasurable.
+double estimate_page_skew(const std::vector<OCRResultItem> &results) {
+  std::vector<double> angles;
+  angles.reserve(results.size());
+  for (const auto &r : results) {
+    const double dx = r.box[1][0] - r.box[0][0];
+    const double dy = r.box[1][1] - r.box[0][1];
+    const double h = std::hypot(double(r.box[3][0] - r.box[0][0]),
+                                double(r.box[3][1] - r.box[0][1]));
+    if (dx <= 0.0 || dx < 3.0 * h) continue;
+    angles.push_back(std::atan2(dy, dx));
+  }
+  if (angles.size() < kMinSkewLines) return 0.0;
+  auto mid = angles.begin() + angles.size() / 2;
+  std::nth_element(angles.begin(), mid, angles.end());
+  const double mag = std::abs(*mid);
+  return (mag < kMinSkewRad || mag > kMaxSkewRad) ? 0.0 : *mid;
+}
+
+// A box is the axis-aligned hull of content tilted by theta: recover the
+// content's own (w, h) from the hull, rotate its centre by -theta, and pull
+// each x-edge in by edge_tol so glyph bleed doesn't bridge a narrow gutter.
+void deskew_cut_rects(std::vector<std::array<int, 4>> &rects, double theta,
+                      int edge_tol) {
+  const double c = std::cos(theta), s = std::sin(theta), as = std::abs(s);
+  const double det = c * c - as * as;
+  std::vector<std::array<double, 4>> out(rects.size());
+  double min_x = std::numeric_limits<double>::infinity(), min_y = min_x;
+  for (size_t i = 0; i < rects.size(); ++i) {
+    const auto &r = rects[i];
+    const double W = r[2] - r[0], H = r[3] - r[1];
+    const double w = std::clamp((W * c - H * as) / det, 1.0, std::max(1.0, W));
+    const double h = std::clamp((H * c - W * as) / det, 1.0, std::max(1.0, H));
+    const double cx = 0.5 * (r[0] + r[2]), cy = 0.5 * (r[1] + r[3]);
+    const double rx = cx * c + cy * s, ry = -cx * s + cy * c;
+    double x0 = rx - 0.5 * w + edge_tol, x1 = rx + 0.5 * w - edge_tol;
+    if (x1 - x0 < 1.0) { x0 = rx - 0.5; x1 = rx + 0.5; }
+    out[i] = {x0, ry - 0.5 * h, x1, ry + 0.5 * h};
+    min_x = std::min(min_x, x0);
+    min_y = std::min(min_y, out[i][1]);
+  }
+  // recursive_xy_cut treats a negative x_min as a right-to-left page.
+  const double sx = std::max(0.0, -min_x), sy = std::max(0.0, -min_y);
+  for (size_t i = 0; i < rects.size(); ++i) {
+    rects[i] = {static_cast<int>(std::lround(out[i][0] + sx)),
+                static_cast<int>(std::lround(out[i][1] + sy)),
+                static_cast<int>(std::lround(out[i][2] + sx)),
+                static_cast<int>(std::lround(out[i][3] + sy))};
+  }
+}
+
+// PaddleX calculate_projection_overlap_ratio (mode "union"); axis 0 = x.
+double projection_overlap(const std::array<int, 4> &a,
+                          const std::array<int, 4> &b, int axis) {
+  const int s = axis, e = axis + 2;
+  const int ov = std::min(a[e], b[e]) - std::max(a[s], b[s]);
+  if (ov <= 0) return 0.0;
+  const int uni = std::max(a[e], b[e]) - std::min(a[s], b[s]);
+  return uni > 0 ? static_cast<double>(ov) / uni : 0.0;
+}
+
+long long rect_area(const std::array<int, 4> &r) {
+  return static_cast<long long>(std::max(0, r[2] - r[0])) *
+         std::max(0, r[3] - r[1]);
+}
+
+double area_iou(const std::array<int, 4> &a, const std::array<int, 4> &b) {
+  const long long iw = std::max(0, std::min(a[2], b[2]) - std::max(a[0], b[0]));
+  const long long ih = std::max(0, std::min(a[3], b[3]) - std::max(a[1], b[1]));
+  const long long inter = iw * ih;
+  const long long uni = rect_area(a) + rect_area(b) - inter;
+  return uni > 0 ? static_cast<double>(inter) / static_cast<double>(uni) : 0.0;
+}
+
+// PaddleX get_layout_structure for text blocks: a block that overlaps a larger
+// one, or X-overlaps two side-by-side paragraphs, spans columns and would keep
+// the X projection from ever reaching zero.
+std::vector<char> mark_cross_layout(const std::vector<std::array<int, 4>> &rects,
+                                    const std::vector<int> &line_height) {
+  const size_t n = rects.size();
+  std::vector<char> cross(n, 0);
+  std::vector<size_t> order(n);
+  std::iota(order.begin(), order.end(), size_t{0});
+  std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) {
+    if (rects[a][0] != rects[b][0]) return rects[a][0] < rects[b][0];
+    return rects[a][2] - rects[a][0] < rects[b][2] - rects[b][0];
+  });
+  auto is_paragraph = [&](size_t k) {
+    const auto &r = rects[k];
+    return std::max(r[2] - r[0], r[3] - r[1]) > 8 * line_height[k];
+  };
+  auto side_by_side = [&](size_t a, size_t b) {
+    return projection_overlap(rects[a], rects[b], 0) == 0.0 &&
+           projection_overlap(rects[a], rects[b], 1) > 0.0;
+  };
+  std::vector<char> has_side(n, 0);
+  for (size_t a = 0; a < n; ++a)
+    for (size_t b = a + 1; b < n; ++b)
+      if (side_by_side(a, b)) has_side[a] = has_side[b] = 1;
+  for (size_t bi : order) {
+    if (cross[bi]) continue;
+    const auto &b = rects[bi];
+    for (size_t ri : order) {
+      if (ri == bi || cross[ri]) continue;
+      const auto &r = rects[ri];
+      if (area_iou(b, r) > 0.1 && rect_area(b) < rect_area(r)) {
+        cross[bi] = 1;
+        break;
+      }
+      if (!has_side[ri] || !is_paragraph(ri) ||
+          projection_overlap(b, r, 0) <= 0.0)
+        continue;
+      for (size_t si : order) {
+        if (si == bi || si == ri || cross[si]) continue;
+        if (projection_overlap(b, rects[si], 0) > 0.0 && side_by_side(ri, si) &&
+            is_paragraph(si)) {
+          cross[bi] = 1;
+          break;
+        }
+      }
+      if (cross[bi]) break;
+    }
+  }
+  return cross;
+}
+
+// Columns of `node` on the robust geometry, left to right, once its
+// cross-layout blocks are set aside. Fewer than two means no split and
+// flags nothing.
+std::vector<std::vector<int>>
+split_columns(const std::vector<int> &node,
+              const std::vector<std::array<int, 4>> &rects,
+              const std::vector<int> &line_height, std::vector<char> &cross) {
+  std::vector<std::array<int, 4>> sub;
+  std::vector<int> sub_lh;
+  sub.reserve(node.size());
+  sub_lh.reserve(node.size());
+  for (int i : node) {
+    sub.push_back(rects[static_cast<size_t>(i)]);
+    sub_lh.push_back(line_height[static_cast<size_t>(i)]);
+  }
+  const std::vector<char> sub_cross = node.size() <= kMaxCrossLayoutBlocks
+                                          ? mark_cross_layout(sub, sub_lh)
+                                          : std::vector<char>(node.size(), 0);
+  std::vector<size_t> kept;
+  for (size_t k = 0; k < node.size(); ++k)
+    if (!sub_cross[k]) kept.push_back(k);
+  std::stable_sort(kept.begin(), kept.end(),
+                   [&](size_t a, size_t b) { return sub[a][0] < sub[b][0]; });
+  std::vector<std::vector<int>> groups;
+  int cur_end = 0;
+  for (size_t k : kept) {
+    if (groups.empty() || sub[k][0] > cur_end) groups.emplace_back();
+    groups.back().push_back(node[k]);
+    cur_end = groups.back().size() == 1 ? sub[k][2] : std::max(cur_end, sub[k][2]);
+  }
+  if (groups.size() < 2) return {};
+  for (size_t k = 0; k < node.size(); ++k)
+    if (sub_cross[k]) cross[static_cast<size_t>(node[k])] = 1;
+  return groups;
+}
+
+// Reading order as predicted by the layout model itself (PP-DocLayoutV3's
+// read_order column) -- the ordering PaddleOCR-VL uses. Applies only when
+// every real box carries one; lines outside every box go right after the box
+// directly above them in the same column, else right before the one directly
+// below, else after the nearest. `by_layout` holds each box's lines in row
+// order. Returns false to fall back to the geometric cut.
+bool emit_model_order(const std::vector<OCRResultItem> &results,
+                      const std::vector<LayoutBox> &layout,
+                      const std::vector<std::vector<int>> &by_layout,
+                      std::vector<int> &out) {
+  std::vector<int> boxes;
+  for (size_t li = 0; li < layout.size(); ++li) {
+    if (layout[li].class_id == kSupplementaryRegionClassId) continue;
+    if (layout[li].read_order < 0) return false;
+    boxes.push_back(static_cast<int>(li));
+  }
+  if (boxes.empty()) return false;
+  std::stable_sort(boxes.begin(), boxes.end(), [&](int a, int b) {
+    return layout[static_cast<size_t>(a)].read_order <
+           layout[static_cast<size_t>(b)].read_order;
+  });
+  // A real ranking gives every box its own slot; ties (an export whose order
+  // head collapsed to a constant) carry no order at all.
+  for (size_t k = 1; k < boxes.size(); ++k)
+    if (layout[static_cast<size_t>(boxes[k - 1])].read_order ==
+        layout[static_cast<size_t>(boxes[k])].read_order)
+      return false;
+  std::vector<std::array<int, 4>> box_aabb(layout.size());
+  for (int li : boxes) {
+    auto [x0, y0, x1, y1] = turbo_ocr::aabb(layout[static_cast<size_t>(li)].box);
+    box_aabb[static_cast<size_t>(li)] = {x0, y0, x1, y1};
+  }
+  // The model now and then swaps neighbouring paragraphs of one column, which
+  // geometry never gets wrong: consecutive boxes that share a column (x-extents
+  // overlapping >= 80% of their union) stay top to bottom.
+  auto same_column = [&](int a, int b) {
+    const auto &A = box_aabb[static_cast<size_t>(a)];
+    const auto &B = box_aabb[static_cast<size_t>(b)];
+    const int ov = std::min(A[2], B[2]) - std::max(A[0], B[0]);
+    const int uni = std::max(A[2], B[2]) - std::min(A[0], B[0]);
+    return uni > 0 && ov * 10 >= uni * 8;
+  };
+  for (size_t i = 0; i < boxes.size();) {
+    size_t j = i + 1;
+    while (j < boxes.size() && same_column(boxes[j - 1], boxes[j])) ++j;
+    std::stable_sort(boxes.begin() + static_cast<std::ptrdiff_t>(i),
+                     boxes.begin() + static_cast<std::ptrdiff_t>(j),
+                     [&](int a, int b) {
+                       return box_aabb[static_cast<size_t>(a)][1] <
+                              box_aabb[static_cast<size_t>(b)][1];
+                     });
+    i = j;
+  }
+  std::vector<int> rank(layout.size(), -1);
+  for (size_t k = 0; k < boxes.size(); ++k)
+    rank[static_cast<size_t>(boxes[k])] = static_cast<int>(k);
+
+  // Orphan slot: (box rank, -1 before / +1 after, y0, x0, result index).
+  struct Slot { int rank, side, y0, x0, ri; };
+  std::vector<Slot> slots;
+  for (size_t ri = 0; ri < results.size(); ++ri) {
+    const int lid = results[ri].layout_id;
+    if (lid >= 0 && static_cast<size_t>(lid) < layout.size() && rank[static_cast<size_t>(lid)] >= 0)
+      continue;
+    auto [x0, y0, x1, y1] = turbo_ocr::aabb(results[ri].box);
+    const int cy2 = y0 + y1;  // doubled centre, keeps the compare integral
+    int above = -1, below = -1, nearest = -1;
+    long long nearest_d = std::numeric_limits<long long>::max();
+    int above_ov = 0, below_ov = 0;
+    for (int li : boxes) {
+      const auto &a = box_aabb[static_cast<size_t>(li)];
+      const int ov = std::min(x1, a[2]) - std::max(x0, a[0]);
+      if (ov > 0 && 2 * a[3] <= cy2 &&
+          (above < 0 || a[3] > box_aabb[static_cast<size_t>(above)][3] ||
+           (a[3] == box_aabb[static_cast<size_t>(above)][3] && ov > above_ov))) {
+        above = li;
+        above_ov = ov;
+      }
+      if (ov > 0 && 2 * a[1] >= cy2 &&
+          (below < 0 || a[1] < box_aabb[static_cast<size_t>(below)][1] ||
+           (a[1] == box_aabb[static_cast<size_t>(below)][1] && ov > below_ov))) {
+        below = li;
+        below_ov = ov;
+      }
+      const long long d = std::max({0, a[0] - x1, x0 - a[2]}) +
+                          std::max({0, a[1] - y1, y0 - a[3]});
+      if (d < nearest_d) { nearest_d = d; nearest = li; }
+    }
+    if (above >= 0) slots.push_back({rank[static_cast<size_t>(above)], 1, y0, x0, static_cast<int>(ri)});
+    else if (below >= 0) slots.push_back({rank[static_cast<size_t>(below)], -1, y0, x0, static_cast<int>(ri)});
+    else slots.push_back({rank[static_cast<size_t>(nearest)], 1, y0, x0, static_cast<int>(ri)});
+  }
+  std::stable_sort(slots.begin(), slots.end(), [](const Slot &a, const Slot &b) {
+    if (a.rank != b.rank) return a.rank < b.rank;
+    if (a.side != b.side) return a.side < b.side;
+    if (a.y0 != b.y0) return a.y0 < b.y0;
+    return a.x0 < b.x0;
+  });
+
+  size_t s = 0;
+  for (size_t k = 0; k < boxes.size(); ++k) {
+    const int r = static_cast<int>(k);
+    for (; s < slots.size() && slots[s].rank == r && slots[s].side < 0; ++s)
+      out.push_back(slots[s].ri);
+    for (int ri : by_layout[static_cast<size_t>(boxes[k])]) out.push_back(ri);
+    for (; s < slots.size() && slots[s].rank == r; ++s) out.push_back(slots[s].ri);
+  }
+  return true;
+}
+
+} // namespace
 
 // XY-cut over a subset of layout indices. Helper extracted so callers can
 // reuse it on each priority bucket without duplicating the AABB build.
@@ -234,6 +521,8 @@ assign_reading_order_for_results(const std::vector<OCRResultItem> &results,
     return out;
   }
 
+  if (emit_model_order(results, layout, by_layout, out)) return out;
+
   // Cluster the OCR detection boxes into per-cell TextLines. This
   // populates each LayoutBox with direction, num_of_lines,
   // text_line_height, text_line_width, and seg_*_coordinate — which
@@ -270,6 +559,15 @@ assign_reading_order_for_results(const std::vector<OCRResultItem> &results,
       text_line_height = static_cast<int>(sum_h / n);
     }
   }
+
+  // A scan skewed ~1 degree drifts a column edge further than a narrow
+  // gutter is wide; the column retry in run_bucket cuts in de-tilted
+  // coordinates when the page measures skewed.
+  const double skew_rad = page_direction == Direction::kHorizontal
+                              ? estimate_page_skew(results)
+                              : 0.0;
+  const int edge_tol =
+      std::max(2, static_cast<int>(std::lround(0.2 * text_line_height)));
 
   // Detect parent → children relationships once for the page; the
   // sidecar links survive across buckets so vision_footnote can stay
@@ -357,17 +655,50 @@ assign_reading_order_for_results(const std::vector<OCRResultItem> &results,
         rects.push_back(a.aabb);
       }
     }
+    // Where the plain cut splits on neither axis it would read straight
+    // across the columns; retry there on skew-corrected, edge-tolerant
+    // geometry. Blocks that retry sets aside as cross-layout are inserted by
+    // distance below.
+    std::vector<char> cross(aug.size(), 0);
+    std::vector<std::array<int, 4>> split_rects;
+    std::vector<int> line_h;
+    ColumnSplitFn split;
+    if (bucket == 1 && page_direction == Direction::kHorizontal) {
+      split_rects = rects;
+      deskew_cut_rects(split_rects, skew_rad, edge_tol);
+      line_h.resize(aug.size());
+      for (size_t k = 0; k < aug.size(); ++k) {
+        const auto &a = aug[k];
+        const int lh =
+            a.kind == 0 ? layout[static_cast<size_t>(a.payload)].text_line_height
+                        : 0;
+        line_h[k] = lh > 0 ? lh : std::max(1, a.aabb[3] - a.aabb[1]);
+      }
+      split = [&](const std::vector<int> &node) {
+        return split_columns(node, split_rects, line_h, cross);
+      };
+    }
     std::vector<int> aug_indices(aug.size());
     std::iota(aug_indices.begin(), aug_indices.end(), 0);
     std::vector<int> aug_order;
     aug_order.reserve(aug.size());
-    recursive_xy_cut(rects, aug_indices, aug_order, min_gap);
+    recursive_xy_cut(rects, aug_indices, aug_order, min_gap, split);
     std::vector<char> seen(aug.size(), 0);
     for (int ai : aug_order) {
       if (ai >= 0 && static_cast<size_t>(ai) < seen.size()) seen[ai] = 1;
     }
     for (size_t k = 0; k < aug.size(); ++k) {
-      if (!seen[k]) aug_order.push_back(static_cast<int>(k));
+      if (!seen[k] && !cross[k]) aug_order.push_back(static_cast<int>(k));
+    }
+    for (size_t k = 0; k < aug.size(); ++k) {
+      if (!cross[k]) continue;
+      const auto &a = aug[k];
+      if (a.kind == 0) {
+        unsorted.push_back({a.payload, a.aabb, OrderLabel::kCrossLayout,
+                            layout[static_cast<size_t>(a.payload)].class_id});
+      } else {
+        unsorted.push_back({-2 - a.payload, a.aabb, OrderLabel::kCrossLayout, -1});
+      }
     }
 
     // 2. Convert XY-cut output to a list of (UnsortedBlock + emit

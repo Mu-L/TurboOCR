@@ -27,7 +27,7 @@ Parsed by `server::parse_query_options()` in
 | Param | Default | Effect |
 |---|---|---|
 | `layout` | `0` | Run PP-DocLayoutV3 and emit a `layout` array. |
-| `reading_order` | `0` | XY-cut over the layout boxes; emits `reading_order`. Auto-enables `layout`. |
+| `reading_order` | `0` | Orders the text by the reading order PP-DocLayoutV3 predicts for its boxes (column-aware XY-cut when a box carries none); emits `reading_order`. Auto-enables `layout`. |
 | `as_blocks` | `0` | Emit paragraph-level `blocks`. Auto-enables `layout` + `reading_order`. |
 | `tables` | `0` | Run the table branch (SLANeXt, or a VLM backend) and emit `tables`. Strict opt-in: `1` requires a table backend configured at startup, else `400 TABLE_BACKEND_DISABLED`. Auto-enables `layout`. |
 | `formulas` | `0` | Run the formula branch (PP-FormulaNet-S, in-process ORT-CUDA-13) and emit `formulas`. Strict opt-in: `1` requires a formula backend configured at startup, else `400 FORMULA_BACKEND_DISABLED`. Auto-enables `layout`. |
