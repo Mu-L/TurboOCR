@@ -66,9 +66,9 @@ private:
   //   0 = CPU contours fallback (OpenCV findContours)
   //   1 = GPU CCL + per-ROI findContours on CPU (default; produces rotated
   //       min-area-rects; F1 matches CPU baseline)
-  //   2 = all-GPU JFA per-component Euclidean unclip (no pred_map download,
-  //       no CPU contours; F1 within run-to-run noise of CCL=1; axis-aligned
-  //       quads only)
+  //   2 = all-GPU oriented rects, PCA-fitted per component (no pred_map
+  //       download, no CPU contours)
+  // Every mode ends in the same unclip (detection::region_to_box).
   int gpu_ccl_mode_ = 1;
   // Set from read_db_params() in init_buffers(); GPU_BOX_THRESH/
   // GPU_UNCLIP_SCALE remain as overrides on top.
@@ -134,21 +134,15 @@ private:
   std::vector<std::vector<cv::Point>> ccl_roi_contours_buf_;
   std::vector<cv::Point> ccl_contour_buf_;
 
-  // JFA buffers for per-component Euclidean unclip on GPU (RAII).
-  // Used by run_gpu_ccl_fast (GPU_CCL=2): all-GPU post-processing path that
-  // matches CPU CCL=1 accuracy without downloading the prediction map.
-  CudaPtr<uint32_t> d_jfa_labels_;     // [max_pixels] expanded label map
-  CudaPtr<uint32_t> d_jfa_seeds_;      // [max_pixels] packed JFA nearest-seed coords (primary)
-  CudaPtr<uint32_t> d_jfa_seeds_alt_;  // [max_pixels] JFA ping-pong buffer
-  CudaPtr<float> d_expand_per_comp_;   // [kMaxGpuComponents] per-component expand
-  CudaPtr<int> d_perim_per_comp_;      // [kMaxGpuComponents] per-component crack perimeter
-  // Oriented min-area-rect scratch (mode-2): PCA second-moment sums (uint64)
-  // and per-component axis + projection extents (float). [kMaxGpuComponents*6].
+  // run_gpu_ccl_fast (GPU_CCL=2) buffers, allocated only in that mode: the
+  // accepted components' label map, the oriented-rect scratch -- PCA
+  // second-moment sums (uint64) and per-component axis + projection extents
+  // (float), [kMaxGpuComponents*6] each -- and the pinned host copy of the
+  // rects, pre-allocated so a request never cudaMallocHosts.
+  CudaPtr<uint32_t> d_comp_labels_;    // [max_pixels]
   CudaPtr<unsigned long long> d_ccl_moments_;
   CudaPtr<float> d_ccl_orient_;
-  // Pinned host buffer for post-expand bboxes. Pre-allocated once so
-  // run_gpu_ccl_fast doesn't cudaMallocHost on every request.
-  CudaHostPtr<kernels::GpuDetBox> h_exp_boxes_;
+  CudaHostPtr<kernels::GpuDetBox> h_rect_boxes_;
 
   // Common buffer allocation. resize/db are the per-model config base; env
   // overrides (read_det_resize/read_db_params) are applied here so they win.
@@ -159,7 +153,7 @@ private:
   // slice explicitly (no hidden member state), so single-image and per-batch-slice
   // callers share one path re-usable across SEQUENTIAL slices. Not thread-safe:
   // the helpers still write shared instance scratch (h_ccl_boxes_, ccl_contour_buf_,
-  // d_jfa_*, ...), so one instance serves one worker thread (the pool contract).
+  // d_comp_labels_, ...), so one instance serves one worker thread (the pool contract).
 
   // resize_h/resize_w are the probability-map extents (the batch canvas for
   // run_batch slices). content_h/content_w are the letterboxed extent the
@@ -174,9 +168,8 @@ private:
                                               cudaStream_t stream,
                                               int content_h = -1, int content_w = -1);
 
-  // GPU CCL fast (GPU_CCL=2): all-GPU JFA per-component Euclidean unclip.
-  // Matches CPU CCL=1 word-F1 within run-to-run noise (~0.900 vs 0.902 on
-  // FUNSD), with tighter latency tail (no pred_map download, no findContours).
+  // GPU CCL fast (GPU_CCL=2): each component's oriented rectangle fitted on
+  // the GPU (no pred_map download, no findContours), then the shared unclip.
   [[nodiscard]] std::vector<Box> run_gpu_ccl_fast(const float *d_pred, const uint8_t *d_bitmap,
                                                     int resize_h, int resize_w,
                                                     int orig_h, int orig_w,

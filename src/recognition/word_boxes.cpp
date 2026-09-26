@@ -612,19 +612,13 @@ std::vector<OCRWord> locate_words(const cv::Mat &img, const Box &line,
     OCRWord word;
     word.text = words[static_cast<size_t>(k)].text;
     word.confidence = words[static_cast<size_t>(k)].score;
-    // Same point order as the line box: compute_crop_transform maps the
-    // box's point 0 to the crop's top-left, or, for vertical text, to its
-    // top-right.
-    if (ct.vertical) {
-      word.box[0] = pt(u1, v0);
-      word.box[1] = pt(u1, v1);
-      word.box[2] = pt(u0, v1);
-      word.box[3] = pt(u0, v0);
-    } else {
-      word.box[0] = pt(u0, v0);
-      word.box[1] = pt(u1, v0);
-      word.box[2] = pt(u1, v1);
-      word.box[3] = pt(u0, v1);
+    // Same point order as the line box: point i goes where the line box's
+    // point i went in the crop.
+    const std::array<std::array<float, 2>, 4> corner{
+        {{u0, v0}, {u1, v0}, {u1, v1}, {u0, v1}}};
+    for (int i = 0; i < 4; ++i) {
+      const auto &[u, v] = corner[static_cast<size_t>(crop_corner(ct.vertical, i))];
+      word.box[static_cast<size_t>(i)] = pt(u, v);
     }
     out.push_back(std::move(word));
   }

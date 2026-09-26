@@ -261,7 +261,6 @@ add_library(turbo_ocr_common STATIC
     src/markdown/markdown_latex.cpp
     src/markdown/markdown_columns.cpp
     src/markdown/markdown_assets.cpp
-    third_party/clipper/clipper.cpp
     third_party/simdutf/simdutf.cpp
 )
 target_include_directories(turbo_ocr_common PUBLIC
@@ -679,7 +678,7 @@ else()
         src/kernels/preprocess_kernels.cu
         src/kernels/reduce_kernels.cu
         src/kernels/ccl_kernels.cu
-        src/kernels/jfa.cu
+        src/kernels/oriented_rect.cu
         src/pdf/render/pdf_renderer.cpp
         src/pdf/render/pdf_ppm.cpp
         src/pdf/render/pdf_daemon.cpp
@@ -879,7 +878,7 @@ else()
 
     # diff_ccl: side-by-side comparator for CPU CCL=1 vs GPU CCL=2 outputs.
     # Loads an image, runs both detection paths, prints box counts, IoU stats,
-    # and missed/extra boxes. Used to drive the GPU JFA pipeline accuracy.
+    # and missed/extra boxes. Used to check the GPU_CCL=2 pipeline accuracy.
     add_executable(diff_ccl EXCLUDE_FROM_ALL tools/diff_ccl.cpp)
     target_include_directories(diff_ccl PRIVATE include)
     target_link_libraries(diff_ccl PRIVATE

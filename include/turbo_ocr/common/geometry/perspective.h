@@ -16,6 +16,15 @@ struct CropTransform {
   bool vertical;   // true if the box was rotated (vertical text)
 };
 
+/// Which corner of the crop -- 0 top-left, 1 top-right, 2 bottom-right,
+/// 3 bottom-left -- the box's point k lands on. A tall (vertical-text) box is
+/// turned a quarter anticlockwise, as PaddleOCR's np.rot90 turns it and so as
+/// its recognition and orientation models were trained to read it: the top of
+/// the column goes to the crop's left, its first character first.
+[[nodiscard]] constexpr int crop_corner(bool vertical, int k) noexcept {
+  return vertical ? (k + 3) % 4 : k;
+}
+
 /// Compute the inverse perspective transform that maps a destination rectangle
 /// (0,0)-(resize_w, target_h) back to the quadrilateral defined by @p box in
 /// the source image.  The destination width is clamped to [1, max_width].
@@ -28,7 +37,6 @@ inline CropTransform compute_crop_transform(const Box &box, int target_h,
   auto f = [](int v) { return static_cast<float>(v); };
   float bx0 = f(box[0][0]), by0 = f(box[0][1]);
   float bx1 = f(box[1][0]), by1 = f(box[1][1]);
-  float bx2 = f(box[2][0]), by2 = f(box[2][1]);
   float bx3 = f(box[3][0]), by3 = f(box[3][1]);
 
   float crop_w =
@@ -38,19 +46,14 @@ inline CropTransform compute_crop_transform(const Box &box, int target_h,
 
   bool vertical = (crop_h >= crop_w * kVerticalAspectRatio);
 
+  // src_f lists the box points in crop-corner order.
   float src_f[8];
-  if (vertical) {
-    src_f[0] = bx3; src_f[1] = by3;
-    src_f[2] = bx0; src_f[3] = by0;
-    src_f[4] = bx1; src_f[5] = by1;
-    src_f[6] = bx2; src_f[7] = by2;
-    std::swap(crop_w, crop_h);
-  } else {
-    src_f[0] = bx0; src_f[1] = by0;
-    src_f[2] = bx1; src_f[3] = by1;
-    src_f[4] = bx2; src_f[5] = by2;
-    src_f[6] = bx3; src_f[7] = by3;
+  for (int k = 0; k < 4; ++k) {
+    const int c = crop_corner(vertical, k);
+    src_f[2 * c] = f(box[k][0]);
+    src_f[2 * c + 1] = f(box[k][1]);
   }
+  if (vertical) std::swap(crop_w, crop_h);
 
   float ar = (crop_h > 0) ? (crop_w / crop_h) : 0;
   int resize_w =

@@ -1,4 +1,6 @@
 #include <catch_amalgamated.hpp>
+#include <array>
+#include <cmath>
 #include <cstdlib>
 #include "turbo_ocr/common/cv_geometry.h"
 
@@ -9,63 +11,84 @@ using turbo_ocr::Box;
 using turbo_ocr::detection::box_score_fast;
 using turbo_ocr::detection::compute_det_resize;
 using turbo_ocr::detection::effective_det_max_side;
-using turbo_ocr::detection::get_mini_boxes;
+using turbo_ocr::detection::extract_boxes_from_bitmap;
 using turbo_ocr::detection::kDetResizeDefault;
 using turbo_ocr::detection::read_det_resize;
-using turbo_ocr::detection::unclip;
+using turbo_ocr::detection::region_to_box;
+using turbo_ocr::detection::unclip_rect;
 
-TEST_CASE("get_mini_boxes returns ordered corners", "[det_postprocess]") {
-  // A simple rectangle contour
-  std::vector<cv::Point> contour = {{10, 10}, {50, 10}, {50, 30}, {10, 30}};
-  float min_side = 0;
-  Box box = get_mini_boxes(contour, min_side);
-
-  // min_side should be the shorter dimension (height=20)
-  CHECK(min_side == Catch::Approx(20.0f).margin(1.0f));
-
-  // top-left should have smallest y among left pair, smallest x among top pair
-  // Verify ordering: tl.y <= bl.y, tr.y <= br.y, tl.x <= tr.x
-  CHECK(box[0][1] <= box[3][1]); // tl.y <= bl.y
-  CHECK(box[1][1] <= box[2][1]); // tr.y <= br.y
-  CHECK(box[0][0] <= box[1][0]); // tl.x <= tr.x
-}
-
-TEST_CASE("get_mini_boxes handles tilted contour", "[det_postprocess]") {
-  // Slightly rotated rectangle
-  std::vector<cv::Point> contour = {{15, 5}, {55, 10}, {53, 35}, {13, 30}};
-  float min_side = 0;
-  Box box = get_mini_boxes(contour, min_side);
-
-  // Should still produce a valid 4-corner box
-  CHECK(min_side > 0);
-  // All corners should be close to the input contour bounding region
-  for (int i = 0; i < 4; ++i) {
-    CHECK(box[i][0] >= 0);
-    CHECK(box[i][1] >= 0);
+TEST_CASE("unclip_rect grows the rectangle by area * ratio / perimeter a side",
+          "[det_postprocess]") {
+  // 40x20: d = 1.5 * 800 / 120 = 10.
+  for (const float angle : {0.0f, 30.0f}) {
+    const cv::RotatedRect r({50.0f, 25.0f}, {40.0f, 20.0f}, angle);
+    const cv::RotatedRect g = unclip_rect(r, 1.5f);
+    CHECK(g.size.width == Catch::Approx(60.0f));
+    CHECK(g.size.height == Catch::Approx(40.0f));
+    CHECK(g.center.x == Catch::Approx(50.0f));
+    CHECK(g.center.y == Catch::Approx(25.0f));
+    CHECK(g.angle == Catch::Approx(angle));
   }
+  // A degenerate (zero-area) rectangle does not grow.
+  const cv::RotatedRect line({10.0f, 10.0f}, {30.0f, 0.0f}, 0.0f);
+  CHECK(unclip_rect(line, 1.5f).size.height == Catch::Approx(0.0f));
 }
 
-TEST_CASE("unclip expands polygon", "[det_postprocess]") {
-  std::vector<cv::Point> polygon = {{10, 10}, {50, 10}, {50, 30}, {10, 30}};
-  float unclip_ratio = 1.5f;
-  auto expanded = unclip(polygon, unclip_ratio);
-
-  // Expanded polygon should have at least 3 points
-  REQUIRE(expanded.size() >= 3);
-
-  // The bounding rect of the expanded polygon should be larger
-  cv::Rect orig_br = cv::boundingRect(polygon);
-  cv::Rect exp_br = cv::boundingRect(expanded);
-  CHECK(exp_br.width >= orig_br.width);
-  CHECK(exp_br.height >= orig_br.height);
+TEST_CASE("region_to_box orders the corners and rounds after scaling back",
+          "[det_postprocess]") {
+  // No growth, corners at .4 px: on a half-size map they land on .8 px in the
+  // original, which rounds up -- rounding before scaling would lose that.
+  const cv::RotatedRect r({30.4f, 20.4f}, {20.0f, 10.0f}, 0.0f);
+  const auto box = region_to_box(r, 0.0f, 5.0f, 0.5f, 0.5f, 1000, 1000);
+  REQUIRE(box.has_value());
+  CHECK((*box)[0] == std::array<int, 2>{41, 31});  // tl
+  CHECK((*box)[1] == std::array<int, 2>{81, 31});  // tr
+  CHECK((*box)[2] == std::array<int, 2>{81, 51});  // br
+  CHECK((*box)[3] == std::array<int, 2>{41, 51});  // bl
+  // Clamped to the image.
+  const auto edge = region_to_box(r, 0.0f, 5.0f, 0.5f, 0.5f, 60, 1000);
+  REQUIRE(edge.has_value());
+  CHECK((*edge)[1][0] == 59);
 }
 
-TEST_CASE("unclip with zero perimeter returns original", "[det_postprocess]") {
-  // Degenerate polygon (single point repeated)
-  std::vector<cv::Point> polygon = {{10, 10}, {10, 10}, {10, 10}};
-  auto result = unclip(polygon, 1.5f);
-  // Should return original (no crash)
-  CHECK(result.size() == polygon.size());
+TEST_CASE("region_to_box rejects what is too thin to be text", "[det_postprocess]") {
+  // Thinner than min_unclipped_side after the unclip.
+  CHECK_FALSE(region_to_box({{50, 50}, {40, 4}, 0}, 0.0f, 5.0f, 1.0f, 1.0f, 100, 100));
+  // Under 4 px a side once scaled to the original (a 2x-upsampled map).
+  CHECK_FALSE(region_to_box({{50, 50}, {40, 6}, 0}, 0.0f, 5.0f, 2.0f, 2.0f, 100, 100));
+  CHECK(region_to_box({{50, 50}, {40, 8}, 0}, 0.0f, 5.0f, 2.0f, 2.0f, 100, 100));
+}
+
+TEST_CASE("a region's box is its rectangle unclipped, not its outline", "[det_postprocess]") {
+  // A text line whose top edge is jagged (every other column two rows
+  // taller): its outline has much less area per perimeter than its
+  // rectangle, and growing the outline gives a box that clips the line.
+  cv::Mat bitmap = cv::Mat::zeros(60, 140, CV_8U);
+  bitmap(cv::Rect(10, 20, 100, 10)).setTo(255);
+  for (int x = 10; x < 110; x += 2) bitmap(cv::Rect(x, 18, 1, 2)).setTo(255);
+  cv::Mat pred(bitmap.size(), CV_32F, cv::Scalar(0.0f));
+  pred.setTo(0.9f, bitmap);
+
+  std::vector<cv::Point> shifted;
+  cv::Mat mask;
+  std::vector<std::vector<cv::Point>> contours;
+  std::vector<cv::Vec4i> hierarchy;
+  cv::Mat work = bitmap.clone();
+  const auto boxes = extract_boxes_from_bitmap(pred, work, 60, 140, 60, 140, 0.4f, 1.4f, 3.0f,
+                                               5.0f, shifted, mask, contours, hierarchy);
+  REQUIRE(boxes.size() == 1);
+
+  std::vector<cv::Point> px;
+  cv::findNonZero(bitmap, px);
+  const cv::RotatedRect rect = cv::minAreaRect(px);
+  const float w = std::max(rect.size.width, rect.size.height);
+  const float h = std::min(rect.size.width, rect.size.height);
+  const float d = 1.4f * w * h / (2.0f * (w + h));
+  const auto &b = boxes[0];
+  CHECK(b[0][1] == static_cast<int>(std::round(rect.center.y - h / 2 - d)));
+  CHECK(b[3][1] == static_cast<int>(std::round(rect.center.y + h / 2 + d)));
+  CHECK(b[0][0] == static_cast<int>(std::round(rect.center.x - w / 2 - d)));
+  CHECK(b[1][0] == static_cast<int>(std::round(rect.center.x + w / 2 + d)));
 }
 
 TEST_CASE("box_score_fast computes mean within polygon", "[det_postprocess]") {

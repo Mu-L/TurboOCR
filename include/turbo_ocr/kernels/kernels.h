@@ -119,9 +119,9 @@ struct GpuDetBox {
   int xmin, ymin, xmax, ymax; // bounding box in resize coords
   float score;                // mean of pred_map within bbox
   int pixel_count;            // number of foreground pixels in component
-  // Oriented (rotated) min-area-rect corners over the expanded region, in
-  // resize coords. Filled ONLY by the mode-2 oriented extract path
-  // (cuda_jfa_extract_oriented); the axis-aligned CCL path leaves them unused.
+  // Oriented (rotated) rect corners of the component, in resize coords. Filled
+  // ONLY by the mode-2 path (cuda_extract_oriented_rects); the axis-aligned CCL
+  // path leaves them unused.
   float ox[4], oy[4];
 };
 
@@ -157,68 +157,29 @@ int cuda_gpu_ccl_detect(
     cudaStream_t stream,
     int *h_num_total = nullptr); // optional: pre-filter component total
 
-// Exact bounded per-component Euclidean unclip (all-GPU, no merges, no
-// pred_map download): matches Clipper's polygon-offset distance
-// area*ratio/perimeter per component. Each foreground boundary pixel scatters
-// its exact squared distance + label into every pixel within that component's
-// expand radius; an atomicMin picks the exact nearest reaching component per
-// pixel — no approximate global distance transform, exact at the boundaries
-// between adjacent text.
-//   d_compact_ids       = CCL compact label map (int32_t, -1=bg, 0..N-1)
-//   d_expand_per_comp   = float[kMaxGpuComponents], per-component expand (px)
-//   d_expanded_labels   = uint32_t output (1..N, 0=bg)
-// d_seeds is repurposed as the per-pixel winner-key scratch (uint32[w*h]);
-// d_seeds_alt and max_expand are retained for interface stability (each stamp
-// is bounded by its own component radius, so no global bound is needed).
-void cuda_jfa_expand_labels(const uint8_t *d_bitmap,
-                            const int32_t *d_compact_ids,
-                            const float *d_expand_per_comp,
-                            uint32_t *d_expanded_labels,
-                            int w, int h, float max_expand,
-                            uint32_t *d_seeds, uint32_t *d_seeds_alt,
-                            cudaStream_t stream);
+// GPU_CCL=2 (oriented_rect.cu). Labels every foreground pixel whose component
+// passes the pre-unclip filters (>= 3 px, bbox >= 3 px a side, mean score >=
+// box_thresh) with its compact id + 1, everything else 0.
+//   d_compact_ids = CCL compact label map (int32_t, -1=bg, 0..N-1)
+//   d_bboxes      = the PRE-filter per-component CCL boxes, indexed by compact id
+//   d_labels      = uint32_t[w*h] output
+void cuda_label_accepted_components(const uint8_t *d_bitmap,
+                                    const int32_t *d_compact_ids,
+                                    const GpuDetBox *d_bboxes, int num_slots,
+                                    float box_thresh, uint32_t *d_labels,
+                                    int w, int h, cudaStream_t stream);
 
-// Accumulate each component's contour perimeter as its exposed 4-crack-edge
-// count (cityblock/staircase boundary length ≈ cv2.arcLength). One thread per
-// pixel, atomicAdd into a per-component int counter. Indexed by PRE-filter
-// compact_id; the buffer is zeroed internally before accumulation. Must run
-// BEFORE cuda_compute_expand_per_comp, which uses it as the expand divisor.
-//   d_perim_per_comp = int[kMaxGpuComponents]
-void cuda_accumulate_crack_perimeter(
-    const int32_t *d_compact_ids, const uint8_t *d_bitmap,
-    int w, int h, int num_slots, int *d_perim_per_comp, cudaStream_t stream);
-
-// Compute per-component expand distance from PRE-filter CCL bboxes.
-// Indexed by PRE-filter compact_id (matches what compact_ids[] stores) so JFA
-// expand can look up expand_per_comp[compact_ids[seed]] directly. Empty /
-// size-rejected / score-rejected slots get expand=0 → JFA treats as bg.
-// d_perim_per_comp is the per-component contour perimeter from
-// cuda_accumulate_crack_perimeter, used as the area*ratio/perimeter divisor.
-void cuda_compute_expand_per_comp(
-    const GpuDetBox *d_bboxes, const int *d_perim_per_comp, int num_slots,
-    float unclip_ratio, float min_expand, float max_expand,
-    float box_thresh, float *d_expand_per_comp, cudaStream_t stream);
-
-// Image-wide bbox extraction over the expanded label map. One thread per
-// pixel, atomicMin/Max/Add scatter into the per-component bbox slot.
-// Empty / filtered-out slots end up with pixel_count == 0.
-void cuda_jfa_extract_bboxes(const uint32_t *d_expanded_labels,
-                             int w, int h,
-                             GpuDetBox *d_bboxes, int num_slots,
-                             cudaStream_t stream);
-
-// Oriented (rotated) min-area-rect extraction over the expanded label map,
-// fully on GPU. Superset of cuda_jfa_extract_bboxes: it fills the axis-aligned
-// bbox + pixel_count + the PCA-oriented rect corners (GpuDetBox::ox/oy) so the
-// mode-2 host path emits rotated quads matching the CPU minAreaRect geometry.
+// Each labelled component's oriented rectangle, fully on GPU: the axis-aligned
+// bbox + pixel_count + the PCA-oriented rect corners (GpuDetBox::ox/oy, ordered
+// around the rectangle), the GPU's stand-in for cv::minAreaRect.
 //   d_moments = uint64[num_slots*6] scratch (n,sx,sy,sxx,syy,sxy)
 //   d_orient  = float[num_slots*6]  scratch (cos,sin,umin,umax,vmin,vmax)
 // Both are zeroed/seeded internally. Only the small d_bboxes array is later
-// copied to host (unchanged transfer contract).
-void cuda_jfa_extract_oriented(const uint32_t *d_expanded_labels,
-                               int w, int h,
-                               GpuDetBox *d_bboxes, int num_slots,
-                               unsigned long long *d_moments, float *d_orient,
-                               cudaStream_t stream);
+// copied to host.
+void cuda_extract_oriented_rects(const uint32_t *d_labels,
+                                 int w, int h,
+                                 GpuDetBox *d_bboxes, int num_slots,
+                                 unsigned long long *d_moments, float *d_orient,
+                                 cudaStream_t stream);
 
 } // namespace turbo_ocr::kernels

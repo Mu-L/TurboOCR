@@ -46,7 +46,7 @@ namespace turbo_ocr::kernels {
 // MEMORY SAFETY:
 // - ALL buffers pre-allocated by caller (no cudaMallocAsync)
 // - d_labels / d_compact_ids are int[w*h] scratch; only fg pixels of
-//   compact_ids end up >= 0 (bg = -1), as the JFA expand path requires
+//   compact_ids end up >= 0 (bg = -1), as the GPU_CCL=2 labelling requires
 // - d_bboxes must be allocated for kMaxGpuComponents * 2 GpuDetBox
 //   (first half for extraction, second half for filtered output)
 // - float4 loads in threshold kernel require 16-byte alignment
@@ -476,7 +476,7 @@ int cuda_gpu_ccl_detect(
   CUDA_CHECK(cudaMemcpyAsync(h_num_boxes, d_num_boxes, sizeof(int),
                               cudaMemcpyDeviceToHost, stream));
   // Optional: pre-filter component total for callers that index by pre-filter
-  // compact_id (e.g. the JFA per-component expand path).
+  // compact_id (the GPU_CCL=2 oriented-rect path).
   if (h_num_total != nullptr) {
     CUDA_CHECK(cudaMemcpyAsync(h_num_total, d_id_counter, sizeof(int),
                                 cudaMemcpyDeviceToHost, stream));

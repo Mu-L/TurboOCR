@@ -286,7 +286,7 @@ LD_LIBRARY_PATH=/usr/local/tensorrt/lib ./build/turboocr-server
 ```
 
 Needs GCC 13.3+/C++20, CUDA + TensorRT 10.2+, OpenCV 4.x, Drogon 1.9+, gRPC.
-Wuffs, Clipper, and PDFium are vendored in `third_party/`.
+Wuffs and PDFium are vendored in `third_party/`.
 
 → [Build guide & GPU-architecture notes](docs/build/native.md)
 
@@ -300,7 +300,6 @@ Built on open-source work:
 - **[Drogon](https://drogon.org)** — high-performance async C++ HTTP framework.
 - **[Wuffs](https://github.com/google/wuffs)** — fast PNG decoder by Google (vendored).
 - **[PDFium](https://pdfium.googlesource.com/pdfium/)** — PDF rendering and text extraction (vendored).
-- **[Clipper](http://www.angusj.com/delphi/clipper.php)** — polygon clipping for text-detection post-processing (vendored).
 
 ## License
 

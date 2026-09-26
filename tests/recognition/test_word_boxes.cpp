@@ -614,12 +614,12 @@ TEST_CASE("locate_words: a rotated line gives rotated word boxes around each wor
 
 TEST_CASE("locate_words: vertical text keeps the line box's point order", "[words]") {
   auto r = render_line({"vertical", "words"});
-  // Text reading bottom to top, the orientation compute_crop_transform reads
+  // Text reading top to bottom, the orientation compute_crop_transform reads
   // tall boxes in.
   cv::Mat img;
-  cv::rotate(r.img, img, cv::ROTATE_90_COUNTERCLOCKWISE);
-  const int W = r.img.cols;
-  auto to_rot = [W](int x, int y) { return std::array<int, 2>{y, W - 1 - x}; };
+  cv::rotate(r.img, img, cv::ROTATE_90_CLOCKWISE);
+  const int H = r.img.rows;
+  auto to_rot = [H](int x, int y) { return std::array<int, 2>{H - 1 - y, x}; };
   const auto [lx0, ly0, lx1, ly1] = turbo_ocr::aabb(r.line);
   const auto a = to_rot(lx0, ly0), b = to_rot(lx1, ly1);
   Box line{};
@@ -631,7 +631,7 @@ TEST_CASE("locate_words: vertical text keeps the line box's point order", "[word
   REQUIRE(words.size() == 2);
   for (size_t k = 0; k < words.size(); ++k) {
     cv::Mat mask;
-    cv::rotate(r.masks[k], mask, cv::ROTATE_90_COUNTERCLOCKWISE);
+    cv::rotate(r.masks[k], mask, cv::ROTATE_90_CLOCKWISE);
     check_tight(words[k], mask);
     // [tl, tr, br, bl] like the line box.
     const auto &q = words[k].box;
@@ -640,6 +640,6 @@ TEST_CASE("locate_words: vertical text keeps the line box's point order", "[word
     CHECK(q[2][0] == q[1][0]);
     CHECK(q[2][1] == q[3][1]);
   }
-  // Reading order bottom to top: the first word sits lower on the page.
-  CHECK(words[0].box[3][1] > words[1].box[3][1]);
+  // Reading order top to bottom: the first word sits higher on the page.
+  CHECK(words[0].box[3][1] < words[1].box[3][1]);
 }

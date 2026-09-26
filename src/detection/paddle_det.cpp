@@ -72,7 +72,7 @@ bool PaddleDet::init_buffers(const DetResizeParams& resize, const DbParams& db) 
   unclip_ratio_ = eff_db.unclip_ratio;
 
   // GPU CCL mode: 0=CPU contours, 1=GPU CCL+per-ROI findContours (default),
-  // 2=all-GPU JFA per-component Euclidean unclip
+  // 2=all-GPU oriented rects
   //
   // Empty/garbage env values keep the default instead of atoi/atof-ing to 0,
   // and parsed values are CLAMPED to sane ranges (a 0/negative box_thresh
@@ -118,15 +118,12 @@ bool PaddleDet::init_buffers(const DetResizeParams& resize, const DbParams& db) 
     h_bitmap_ = CudaHostPtr<uint8_t>(max_pixels);
     h_bitmap_pixels_ = max_pixels;
 
-    // JFA (Jump Flooding) per-component label expansion
-    d_jfa_labels_ = CudaPtr<uint32_t>(max_pixels);
-    d_jfa_seeds_ = CudaPtr<uint32_t>(max_pixels);
-    d_jfa_seeds_alt_ = CudaPtr<uint32_t>(max_pixels);
-    d_expand_per_comp_ = CudaPtr<float>(turbo_ocr::kernels::kMaxGpuComponents);
-    d_perim_per_comp_ = CudaPtr<int>(turbo_ocr::kernels::kMaxGpuComponents);
+  }
+  if (gpu_ccl_mode_ == 2) {
+    d_comp_labels_ = CudaPtr<uint32_t>(max_pixels);
     d_ccl_moments_ = CudaPtr<unsigned long long>(turbo_ocr::kernels::kMaxGpuComponents * 6);
     d_ccl_orient_ = CudaPtr<float>(turbo_ocr::kernels::kMaxGpuComponents * 6);
-    h_exp_boxes_ = CudaHostPtr<turbo_ocr::kernels::GpuDetBox>(
+    h_rect_boxes_ = CudaHostPtr<turbo_ocr::kernels::GpuDetBox>(
         turbo_ocr::kernels::kMaxGpuComponents);
   }
 

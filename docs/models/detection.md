@@ -20,7 +20,15 @@ runtime via the `GPU_CCL` env var:
 | --- | --- | --- |
 | `0` | CPU contours fallback | Downloads pred_map + bitmap; `cv::findContours`. Reference accuracy. |
 | `1` | **GPU CCL + per-ROI findContours** *(default)* | GPU connected-component labelling, then `findContours` on tiny per-component ROIs. Rotated min-area-rect quads. F1 matches CPU baseline. |
-| `2` | All-GPU JFA unclip | Jump-flooding per-component Euclidean unclip. No pred_map download, no `findContours`. Axis-aligned quads. F1 within run-to-run noise of mode 1 on FUNSD (≈0.900 vs 0.902). |
+| `2` | All-GPU oriented rects | Each accepted component's rotated rectangle from one PCA reduction on the GPU. No pred_map download, no `findContours`. |
+
+Every mode ends in the same unclip (`detection::region_to_box`), PaddleOCR's
+for quadrilateral boxes: the region's min-area rectangle grown by
+`area × unclip_ratio / perimeter` on every side. Offsetting a rectangle with
+round joins leaves its min-area rectangle exactly that grown rectangle, so the
+offset polygon is never built. Growing the region's pixel outline instead gives
+smaller boxes — a jagged outline has less area and more perimeter than its
+rectangle — and those clip the narrow last glyph of a line (`、`, `。`, `,`).
 
 The mode docstring is in
 [`include/turbo_ocr/detection/paddle_det.h:46-54`](https://github.com/aiptimizer/TurboOCR/blob/main/include/turbo_ocr/detection/paddle_det.h);
@@ -38,7 +46,7 @@ the three implementations live in
 | Output tensor | `(N, 1, H, W)` float32 probability map |
 | Precision | FP16 |
 | Batch | up to `kMaxBatchSize = 8` ([`paddle_det.h:61`](https://github.com/aiptimizer/TurboOCR/blob/main/include/turbo_ocr/detection/paddle_det.h)); per-batch H/W unified to the max, rounded to 32 |
-| DB thresholds | `kDetDbThresh = 0.3`, `kDetDbBoxThresh = 0.6`, `kDetDbUnclipRatio = 1.5` ([`paddle_det.h:40-45`](https://github.com/aiptimizer/TurboOCR/blob/main/include/turbo_ocr/detection/paddle_det.h)) |
+| DB thresholds | Each model's own config: `thresh 0.2`, `box_thresh 0.40` (tiny) / `0.45` (small, medium), `unclip_ratio 1.4` ([`det_config.h`](https://github.com/aiptimizer/TurboOCR/blob/main/include/turbo_ocr/detection/det_config.h)); `DET_DB_THRESH` / `DET_BOX_THRESH` / `DET_UNCLIP` override |
 | Min box side | `kMinBoxSide = 3 px`, `kMinUnclippedSide = 5 px` |
 
 The unified-batch-shape trick (`paddle_det.cpp:413-416`) lets `run_batch` use a
@@ -71,8 +79,7 @@ classDiagram
     -d_batch_bitmap_ CudaPtr~uint8_t~
     -d_ccl_labels_ CudaPtr~int~
     -d_ccl_bboxes_ CudaPtr~GpuDetBox~
-    -d_jfa_seeds_ CudaPtr~int2~
-    -d_expand_per_comp_ CudaPtr~float~
+    -d_comp_labels_ CudaPtr~uint32_t~
     -gpu_ccl_mode_ int
     -box_thresh_ float
     -unclip_scale_ float
@@ -103,14 +110,14 @@ sequenceDiagram
   S->>TRT: infer_dynamic({1,3,resize_h,resize_w})
   TRT-->>S: probability map -> d_output_
   S->>S: cuda_threshold_to_u8(d_output_ -> d_bitmap_buf_)
-  alt gpu_ccl_mode_ == 2 (all-GPU JFA)
-    S->>CCL: cuda_gpu_ccl_detect + jfa_expand_labels + jfa_extract_bboxes
-    CCL-->>CPU: memcpy h_exp_boxes_ (pinned)
-    CPU->>CPU: scale + filter + emit Box[]
+  alt gpu_ccl_mode_ == 2 (all-GPU oriented rects)
+    S->>CCL: cuda_gpu_ccl_detect + label_accepted_components + extract_oriented_rects
+    CCL-->>CPU: memcpy h_rect_boxes_ (pinned)
+    CPU->>CPU: region_to_box (unclip + scale + filter)
   else gpu_ccl_mode_ == 1 (default)
     S->>CCL: cuda_gpu_ccl_detect
     CCL-->>CPU: memcpy bitmap + h_ccl_boxes_
-    CPU->>CPU: per-component findContours + unclip
+    CPU->>CPU: per-component findContours + minAreaRect + region_to_box
   else gpu_ccl_mode_ == 0 (CPU)
     S-->>CPU: memcpy pred_map + bitmap
     CPU->>CPU: extract_boxes_from_bitmap(...)

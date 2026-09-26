@@ -126,6 +126,30 @@ TEST_CASE("compute_crop_transform maps dst rect corners onto the box quad",
   }
 }
 
+TEST_CASE("compute_crop_transform turns tall boxes a quarter anticlockwise",
+          "[rec_geometry]") {
+  // PaddleOCR's np.rot90: the column's top goes to the crop's left, so the
+  // crop reads the column top to bottom. Crop corners [tl, tr, br, bl] come
+  // from box points [1, 2, 3, 0].
+  turbo_ocr::Box box{};
+  box[0] = {50, 10};
+  box[1] = {70, 10};
+  box[2] = {70, 110};
+  box[3] = {50, 110};
+  const auto ct = turbo_ocr::compute_crop_transform(box, 48, kMaxRecWidth);
+  REQUIRE(ct.vertical);
+  const float cw = static_cast<float>(ct.crop_width);
+  const float dst[4][2] = {{0, 0}, {cw, 0}, {cw, 48}, {0, 48}};
+  const int from[4] = {1, 2, 3, 0};
+  for (int k = 0; k < 4; ++k) {
+    const auto p = turbo_ocr::apply_crop_transform_inv(ct, dst[k][0], dst[k][1]);
+    CHECK(p[0] == Catch::Approx(box[from[k]][0]).margin(1e-3));
+    CHECK(p[1] == Catch::Approx(box[from[k]][1]).margin(1e-3));
+  }
+  for (int k = 0; k < 4; ++k)
+    CHECK(turbo_ocr::crop_corner(true, from[k]) == k);
+}
+
 TEST_CASE("compute_crop_transform swaps vertical boxes upright", "[rec_geometry]") {
   // 20x100 vertical box: crop_w/crop_h swap, so the content renders wide
   // (ceil(48 * 100/20) = 240), not squeezed into a 10px-wide strip.

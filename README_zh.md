@@ -267,7 +267,7 @@ LD_LIBRARY_PATH=/usr/local/tensorrt/lib ./build/turboocr-server
 ```
 
 需要 GCC 13.3+/C++20、CUDA + TensorRT 10.2+、OpenCV 4.x、Drogon 1.9+、gRPC。
-Wuffs、Clipper、PDFium 已内置于 `third_party/`。
+Wuffs、PDFium 已内置于 `third_party/`。
 
 → [构建指南与 GPU 架构说明](docs/build/native.md)
 
@@ -281,7 +281,6 @@ Wuffs、Clipper、PDFium 已内置于 `third_party/`。
 - **[Drogon](https://drogon.org)** — 高性能异步 C++ HTTP 框架。
 - **[Wuffs](https://github.com/google/wuffs)** — Google 的快速 PNG 解码器（内置）。
 - **[PDFium](https://pdfium.googlesource.com/pdfium/)** — PDF 渲染与文本提取（内置）。
-- **[Clipper](http://www.angusj.com/delphi/clipper.php)** — 文本检测后处理多边形裁剪（内置）。
 
 ## 许可证
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <opencv2/core.hpp>
+#include <optional>
 #include <vector>
 
 #include "turbo_ocr/common/geometry/box.h"
@@ -16,19 +17,28 @@ namespace turbo_ocr::detection {
                                    std::vector<cv::Point> &shifted_buf,
                                    cv::Mat &mask_buf);
 
-// Expand polygon using Clipper library.
-[[nodiscard]] std::vector<cv::Point> unclip(const std::vector<cv::Point> &polygon,
-                                             float unclip_ratio);
+// DBNet's unclip as PaddleOCR runs it for quadrilateral boxes: the region's
+// min-area rectangle offset outward by d = area * ratio / perimeter. Offset
+// with round joins, a rectangle's min-area rectangle is that rectangle grown
+// by d on every side, so the offset polygon itself is never built. (Offsetting
+// the region's outline instead grows it less: a jagged outline has less area
+// and more perimeter than its rectangle.)
+[[nodiscard]] cv::RotatedRect unclip_rect(const cv::RotatedRect &rect, float unclip_ratio);
+
+// Every detector path's last step for a region whose score passed: unclip its
+// min-area rectangle, reject it when the result is thinner than
+// `min_unclipped_side` or smaller than 4 px a side in the original image, and
+// return its corners there: [tl, tr, br, bl], scaled by 1/ratio before
+// rounding, clamped to the image.
+[[nodiscard]] std::optional<Box> region_to_box(const cv::RotatedRect &rect, float unclip_ratio,
+                                               float min_unclipped_side, float ratio_w,
+                                               float ratio_h, int orig_w, int orig_h);
 
 // Order 4 quad corners in place as [tl, tr, br, bl] — PaddleOCR's convention:
 // stable sort by x (ties keep original order, mirroring Python sorted()), the
 // left pair splits {tl,bl} by y, the right pair {tr,br} by y. SINGLE source of
-// truth shared by get_mini_boxes and the GPU oriented-rect path (paddle_det
-// mode 2) so the two orderings can never drift apart.
+// truth for every detector path, so the orderings can never drift apart.
 void order_quad_tl_tr_br_bl(float xs[4], float ys[4]) noexcept;
-
-// Extract ordered [tl, tr, br, bl] from min-area rotated rect.
-[[nodiscard]] Box get_mini_boxes(const std::vector<cv::Point> &contour, float &min_side);
 
 // Extract boxes from contours -- the shared loop used by both GPU and CPU detectors.
 [[nodiscard]] std::vector<Box> extract_boxes_from_bitmap(

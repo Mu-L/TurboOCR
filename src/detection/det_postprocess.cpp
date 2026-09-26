@@ -1,11 +1,9 @@
 #include "turbo_ocr/detection/det_postprocess.h"
-#include "clipper/clipper.hpp"
 
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <iostream>
-#include <ranges>
 #include "turbo_ocr/common/cv_geometry.h"
 
 using turbo_ocr::Box;
@@ -54,53 +52,6 @@ float box_score_fast(const cv::Mat &pred_map,
   return static_cast<float>(cv::mean(roi, mask_buf)[0]);
 }
 
-std::vector<cv::Point> unclip(const std::vector<cv::Point> &polygon,
-                              float unclip_ratio) {
-  const double perimeter = cv::arcLength(polygon, true);
-  if (perimeter == 0.0)
-    return polygon;
-
-  // PaddleOCR DBPostProcess offset distance = area * ratio / perimeter,
-  // expanded outward with a round join (pyclipper JT_ROUND / ET_CLOSEDPOLYGON).
-  const double area = cv::contourArea(polygon);
-  const double distance = area * unclip_ratio / perimeter;
-
-  // Per-thread scratch: reusing the offsetter and its paths across the
-  // thousands of per-candidate calls avoids repeated heap churn. Clear()
-  // preserves the default MiterLimit(2.0)/ArcTolerance(0.25), so each run is
-  // bit-identical to a freshly constructed ClipperOffset.
-  thread_local ClipperLib::ClipperOffset co;
-  thread_local ClipperLib::Path subj;
-  thread_local ClipperLib::Paths solution;
-
-  co.Clear();
-  subj.clear();
-  subj.reserve(polygon.size());
-  for (const auto &pt : polygon)
-    subj.emplace_back(pt.x, pt.y);
-
-  co.AddPath(subj, ClipperLib::jtRound, ClipperLib::etClosedPolygon);
-  co.Execute(solution, distance);
-
-  if (solution.empty())
-    return polygon;
-
-  // A concave/self-touching source can offset into several rings; keep the
-  // largest by area (matches taking the single expanded ring in the common case).
-  const ClipperLib::Path &best_path =
-      (solution.size() == 1)
-          ? solution.front()
-          : *std::ranges::max_element(solution, {}, [](const ClipperLib::Path &p) {
-              return ClipperLib::Area(p);
-            });
-
-  std::vector<cv::Point> result;
-  result.reserve(best_path.size());
-  for (const auto &p : best_path)
-    result.emplace_back(static_cast<int>(p.X), static_cast<int>(p.Y));
-  return result;
-}
-
 void order_quad_tl_tr_br_bl(float xs[4], float ys[4]) noexcept {
   // Stable insertion sort by x (strict '>' keeps ties in original order,
   // mirroring Python sorted()'s stability exactly).
@@ -125,20 +76,33 @@ void order_quad_tl_tr_br_bl(float xs[4], float ys[4]) noexcept {
   for (int k = 0; k < 4; ++k) { xs[k] = ox[k]; ys[k] = oy[k]; }
 }
 
-Box get_mini_boxes(const std::vector<cv::Point> &contour, float &min_side) {
-  const cv::RotatedRect rect = cv::minAreaRect(contour);
-  min_side = std::min(rect.size.width, rect.size.height);
+cv::RotatedRect unclip_rect(const cv::RotatedRect &rect, float unclip_ratio) {
+  const float w = rect.size.width, h = rect.size.height;
+  const float d = w + h > 0.0f ? unclip_ratio * w * h / (2.0f * (w + h)) : 0.0f;
+  return {rect.center, cv::Size2f(w + 2.0f * d, h + 2.0f * d), rect.angle};
+}
+
+std::optional<Box> region_to_box(const cv::RotatedRect &rect, float unclip_ratio,
+                                 float min_unclipped_side, float ratio_w,
+                                 float ratio_h, int orig_w, int orig_h) {
+  const cv::RotatedRect grown = unclip_rect(rect, unclip_ratio);
+  if (std::min(grown.size.width, grown.size.height) < min_unclipped_side)
+    return std::nullopt;
 
   std::array<cv::Point2f, 4> pts;
-  rect.points(pts.data());
-
+  grown.points(pts.data());
   float xs[4], ys[4];
   for (int k = 0; k < 4; ++k) { xs[k] = pts[k].x; ys[k] = pts[k].y; }
   order_quad_tl_tr_br_bl(xs, ys);
-
-  const auto ri = [](float v) { return static_cast<int>(std::round(v)); };
   Box box;
-  for (int k = 0; k < 4; ++k) box[k] = {ri(xs[k]), ri(ys[k])};
+  for (int k = 0; k < 4; ++k)
+    box[k] = {std::clamp(static_cast<int>(std::round(xs[k] / ratio_w)), 0, orig_w - 1),
+              std::clamp(static_cast<int>(std::round(ys[k] / ratio_h)), 0, orig_h - 1)};
+
+  const int dx01 = box[0][0] - box[1][0], dy01 = box[0][1] - box[1][1];
+  const int dx03 = box[0][0] - box[3][0], dy03 = box[0][1] - box[3][1];
+  if (dx01 * dx01 + dy01 * dy01 < 16 || dx03 * dx03 + dy03 * dy03 < 16)
+    return std::nullopt;
   return box;
 }
 
@@ -185,37 +149,17 @@ std::vector<Box> extract_boxes_from_bitmap(
     // set is order-independent. The min-side test runs before the score to
     // match PaddleOCR's ordering and to skip the area-proportional
     // fillPoly+mean of box_score_fast on candidates too thin to survive.
-    float ssid = 0.0f;
-    (void)get_mini_boxes(contour, ssid);
-    if (ssid < min_box_side)
+    const cv::RotatedRect rect = cv::minAreaRect(contour);
+    if (std::min(rect.size.width, rect.size.height) < min_box_side)
       continue;
 
     const float score = box_score_fast(pred_map, contour, shifted_buf, mask_buf);
     if (score < det_db_box_thresh)
       continue;
 
-    const auto unclipped = unclip(contour, det_db_unclip_ratio);
-    if (unclipped.size() < 3)
-      continue;
-
-    float ssid2 = 0.0f;
-    Box box = get_mini_boxes(unclipped, ssid2);
-    if (ssid2 < min_unclipped_side)
-      continue;
-
-    for (int k = 0; k < 4; ++k) {
-      box[k][0] = std::clamp(static_cast<int>(std::round(box[k][0] / ratio_w)), 0, orig_w - 1);
-      box[k][1] = std::clamp(static_cast<int>(std::round(box[k][1] / ratio_h)), 0, orig_h - 1);
-    }
-
-    const int dx01 = box[0][0] - box[1][0], dy01 = box[0][1] - box[1][1];
-    const int dx03 = box[0][0] - box[3][0], dy03 = box[0][1] - box[3][1];
-    const int rw = static_cast<int>(std::sqrt(static_cast<double>(dx01 * dx01 + dy01 * dy01)));
-    const int rh = static_cast<int>(std::sqrt(static_cast<double>(dx03 * dx03 + dy03 * dy03)));
-    if (rw <= 3 || rh <= 3)
-      continue;
-
-    boxes.push_back(box);
+    if (auto box = region_to_box(rect, det_db_unclip_ratio, min_unclipped_side,
+                                 ratio_w, ratio_h, orig_w, orig_h))
+      boxes.push_back(*box);
   }
 
   return boxes;
