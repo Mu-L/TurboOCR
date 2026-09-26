@@ -91,7 +91,8 @@ void register_ocr_pixels_route_gpu(server::WorkPool &pool,
                                                 opts.routing_override,
                                                 /*defer_external=*/false,
                                                 opts.want_tables,
-                                                opts.want_formulas);
+                                                opts.want_formulas,
+                                                opts.want_words);
           });
         } catch (const turbo_ocr::TimeoutError &) {
           cb(timeout_response());

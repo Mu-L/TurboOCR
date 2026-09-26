@@ -178,6 +178,8 @@ public:
   // GPU worker) to await + assemble. Defaulted false → fully synchronous, so
   // gRPC / PDF / batch / cpu_main callers are byte-identical. Only /ocr/raw
   // (single-image, the throughput path) opts in today.
+  // `want_words` adds each line's word boxes (?words=1); the GpuImage
+  // overload then copies the page to the host once for them.
   [[nodiscard]] OcrPipelineResult run_with_layout(const cv::Mat &img,
                                                    cudaStream_t stream,
                                                    bool want_layout = false,
@@ -185,7 +187,8 @@ public:
                                                    const backend_routing::RequestRouting &routing = {},
                                                    bool defer_external = false,
                                                    bool want_tables = false,
-                                                   bool want_formulas = false);
+                                                   bool want_formulas = false,
+                                                   bool want_words = false);
   [[nodiscard]] OcrPipelineResult run_with_layout(GpuImage gpu_img,
                                                    cudaStream_t stream = 0,
                                                    bool want_layout = false,
@@ -193,7 +196,8 @@ public:
                                                    const backend_routing::RequestRouting &routing = {},
                                                    bool defer_external = false,
                                                    bool want_tables = false,
-                                                   bool want_formulas = false);
+                                                   bool want_formulas = false,
+                                                   bool want_words = false);
 
   // Layout-only path: upload the image, run the PP-DocLayoutV3 inference,
   // collect the boxes, and return. Skips detection, angle classification,
@@ -251,7 +255,8 @@ public:
                         bool want_reading_order = false,
                         bool want_tables = false,
                         bool want_formulas = false,
-                        const backend_routing::RequestRouting &routing = {});
+                        const backend_routing::RequestRouting &routing = {},
+                        bool want_words = false);
 
 private:
   std::unique_ptr<detection::PaddleDet> det_;

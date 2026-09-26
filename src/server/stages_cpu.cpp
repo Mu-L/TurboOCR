@@ -117,7 +117,8 @@ InferFunc make_cpu_infer_func(pipeline::CpuPipelinePool &pool) {
     auto handle = pool.acquire();
     auto out = handle->run_with_layout(img, opts.want_layout,
                                        opts.want_reading_order,
-                                       opts.want_tables, opts.want_formulas);
+                                       opts.want_tables, opts.want_formulas,
+                                       opts.want_words);
     return InferResult{
         .results          = std::move(out.results),
         .layout           = std::move(out.layout),

@@ -82,6 +82,18 @@ namespace {
                     "error", e.what(), "cuda", cudaGetErrorString(err));
   throw turbo_ocr::InferenceError(std::string("detection GPU fault: ") + e.what());
 }
+
+// Host copy of a device page (interleaved BGR, pitched) for the host-side word
+// boxes (recognition::locate_words). A failed copy throws: a response must not
+// come back without the words it asked for.
+cv::Mat download_page(const GpuImage &img, cudaStream_t stream) {
+  cv::Mat host(img.rows, img.cols, CV_8UC3);
+  CUDA_CHECK(cudaMemcpy2DAsync(host.data, host.step, img.data, img.step,
+                               static_cast<size_t>(img.cols) * 3, img.rows,
+                               cudaMemcpyDeviceToHost, stream));
+  CUDA_CHECK(cudaStreamSynchronize(stream));
+  return host;
+}
 } // namespace
 
 std::vector<OCRResultItem> OcrPipeline::run(const cv::Mat &img,
@@ -96,7 +108,8 @@ OcrPipelineResult OcrPipeline::run_with_layout(const cv::Mat &img,
                                                const backend_routing::RequestRouting &routing,
                                                bool defer_external,
                                                bool want_tables,
-                                               bool want_formulas) {
+                                               bool want_formulas,
+                                               bool want_words) {
   UseGuard _ug{in_use_, "run_with_layout"};
   const bool layout_active = use_layout_ && want_layout;
   if (img.empty()) [[unlikely]] return OcrPipelineResult{};
@@ -161,7 +174,9 @@ OcrPipelineResult OcrPipeline::run_with_layout(const cv::Mat &img,
   CUDA_CHECK(cudaStreamWaitEvent(rec_stream_, det_event_, 0));
 
   timer.gpu_start("recognition_inference");
-  auto rec_results = rec_->run(gpu_img, boxes, rec_stream_);
+  std::vector<std::vector<recognition::CtcWord>> words;
+  auto rec_results =
+      rec_->run(gpu_img, boxes, rec_stream_, want_words ? &words : nullptr);
   timer.gpu_stop();
 
   // Record rec_event_ so the NEXT run() can wait for this recognition to
@@ -171,9 +186,11 @@ OcrPipelineResult OcrPipeline::run_with_layout(const cv::Mat &img,
   // is still useful as a correctness guard and for future async recognition.
   CUDA_CHECK(cudaEventRecord(rec_event_, rec_stream_));
 
-  // Combine (filter by drop_score, matching Python's behavior)
+  // Combine (filter by drop_score, matching Python's behavior); word boxes
+  // are placed on the caller's host pixels.
   OcrPipelineResult out;
-  detail::combine_recognition(out, boxes, rec_results);
+  detail::combine_recognition(out, boxes, rec_results,
+                              want_words ? &words : nullptr, &img);
   detail::flag_dropped_crops(out, rec_->last_dropped_crops());
 
   // Layout collect waits on d2h_event_ recorded on layout_stream_. Because
@@ -323,7 +340,8 @@ OcrPipelineResult OcrPipeline::run_with_layout(GpuImage gpu_img,
                                                const backend_routing::RequestRouting &routing,
                                                bool defer_external,
                                                bool want_tables,
-                                               bool want_formulas) {
+                                               bool want_formulas,
+                                               bool want_words) {
   UseGuard _ug{in_use_, "run_with_layout(GpuImage)"};
   const bool layout_active = use_layout_ && want_layout;
   PipelineTimer timer;
@@ -377,15 +395,21 @@ OcrPipelineResult OcrPipeline::run_with_layout(GpuImage gpu_img,
   CUDA_CHECK(cudaStreamWaitEvent(rec_stream_, det_event_, 0));
 
   timer.gpu_start("recognition_inference");
-  auto rec_results = rec_->run(gpu_img, boxes, rec_stream_);
+  std::vector<std::vector<recognition::CtcWord>> words;
+  auto rec_results =
+      rec_->run(gpu_img, boxes, rec_stream_, want_words ? &words : nullptr);
   timer.gpu_stop();
 
   // Record rec_event_ for the next run() to wait on.
   CUDA_CHECK(cudaEventRecord(rec_event_, rec_stream_));
 
-  // Combine (filter by drop_score)
+  // Combine (filter by drop_score). Word boxes are placed on the host, so a
+  // request for them costs one copy of the page.
   OcrPipelineResult out;
-  detail::combine_recognition(out, boxes, rec_results);
+  cv::Mat host_img;
+  if (want_words) host_img = download_page(gpu_img, rec_stream_);
+  detail::combine_recognition(out, boxes, rec_results,
+                              want_words ? &words : nullptr, &host_img);
   detail::flag_dropped_crops(out, rec_->last_dropped_crops());
 
   // Layout collect — see run(cv::Mat, stream) above.

@@ -80,8 +80,13 @@ message OCRRequest {
   bool  as_blocks     = 11;  // auto-enables layout + reading_order
   bool  tables        = 12;  // strict opt-in; auto-enables layout
   bool  formulas      = 13;  // strict opt-in; auto-enables layout
+  bool  words         = 20;  // per-line word boxes (HTTP ?words=1)
 }
 ```
+
+`words` is also on `OCRBatchRequest` and `OCRPDFRequest` (field 20 on all
+three). The words ride in `json_response` like on HTTP, or in
+`OCRResult.words` under the structured response mode.
 
 `tables`/`formulas` are strict opt-in (like HTTP `?tables=1`/`?formulas=1`): a
 configured backend is necessary but the field must be set for the stage to run.
@@ -102,6 +107,13 @@ message OCRResponse {
 }
 
 message OCRResult {
+  string text        = 1;
+  float  confidence  = 2;
+  repeated BoundingBox bounding_box = 3;
+  repeated OCRWord words = 4;  // only when the request set `words`
+}
+
+message OCRWord {
   string text        = 1;
   float  confidence  = 2;
   repeated BoundingBox bounding_box = 3;

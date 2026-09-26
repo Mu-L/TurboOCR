@@ -44,13 +44,15 @@ void open_pdf_for_text_layer(
 // Decide per-page resolved_mode + whether each page needs rendering, from the
 // text-layer quality. Only called for non-ocr modes. AutoVerified is GPU-only
 // (CPU aliases it to Auto before calling). `want_page_image` forces a render
-// for text-layer pages so the encoder has pixels.
+// for text-layer pages so the encoder has pixels. `want_words` copies each
+// text-layer line's words into its result item.
 void prepopulate_pages(pdf::PdfMode mode, bool layout_or_want_layout,
                               const std::vector<pdf::PdfPageText> &page_text_cache,
                               std::vector<PdfPageResult> &page_results,
                               std::vector<uint8_t> &need_render,
                               bool *any_need_render,
-                              bool want_page_image = false);
+                              bool want_page_image = false,
+                              bool want_words = false);
 
 namespace detail {
 
@@ -74,6 +76,7 @@ struct PdfPageSink {
   bool want_tables = false;
   bool want_formulas = false;
   bool want_text = true;
+  bool want_words = false;
   // Rendered pages whose PPM could not be read back (a server-side fault).
   std::atomic<int> decode_failures{0};
   // Pages whose OCR/inference threw — counted by the true page count (the whole
@@ -117,9 +120,9 @@ void store_ocr_page(PdfPageSink &sink, int page_idx, OcrPipelineResult out,
                     std::vector<uint8_t> encoded_image = {},
                     int orientation_deg = 0);
 
-// Rescale text-layer boxes from PDF points (DPI 72) to the render's pixel
-// space. Shared by every geometric path (layout-only, +structure, CPU) so the
-// scale/rounding can't drift between them.
+// Rescale text-layer boxes (lines and their words) from PDF points (DPI 72)
+// to the render's pixel space. Shared by every geometric path (layout-only,
+// +structure, CPU) so the scale/rounding can't drift between them.
 void rescale_boxes_pt_to_px(std::vector<OCRResultItem> &results, int dpi);
 
 // Geometric page: text came from the PDF layer in pt-space. Store layout, then

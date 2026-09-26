@@ -2,8 +2,17 @@
 
 #include "turbo_ocr/common/geometry/box.h"
 #include <string>
+#include <vector>
 
 namespace turbo_ocr {
+
+// One word of a recognized line (?words=1): its text, confidence and its own
+// box in the image, in the same point order as the line's box.
+struct OCRWord {
+  std::string text;
+  float confidence = 0.0f;
+  Box box{};
+};
 
 struct OCRResultItem {
   std::string text;
@@ -20,6 +29,9 @@ struct OCRResultItem {
   // `"id"` / `"layout_id"` in the JSON response.
   int id = -1;
   int layout_id = -1;
+  // Filled only when the request asks for word boxes (?words=1); empty
+  // otherwise, and the serializer then omits the field.
+  std::vector<OCRWord> words;
 };
 
 /// Minimum confidence to keep a recognition result (matching PaddleOCR Python).

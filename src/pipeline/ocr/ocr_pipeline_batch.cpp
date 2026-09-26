@@ -64,7 +64,7 @@ std::vector<OcrPipelineResult> OcrPipeline::run_batch_with_layout(
     const std::vector<cv::Mat> &imgs, cudaStream_t stream,
     bool want_layout, bool want_reading_order,
     bool want_tables, bool want_formulas,
-    const backend_routing::RequestRouting &routing) {
+    const backend_routing::RequestRouting &routing, bool want_words) {
   if (imgs.empty())
     return {};
 
@@ -74,7 +74,7 @@ std::vector<OcrPipelineResult> OcrPipeline::run_batch_with_layout(
     single.push_back(run_with_layout(imgs[0], stream, want_layout,
                                      want_reading_order, routing,
                                      /*defer_external=*/false,
-                                     want_tables, want_formulas));
+                                     want_tables, want_formulas, want_words));
     return single;
   }
 
@@ -92,7 +92,7 @@ std::vector<OcrPipelineResult> OcrPipeline::run_batch_with_layout(
       std::vector<cv::Mat> chunk(imgs.begin() + beg, imgs.begin() + end);
       auto part = run_batch_with_layout(chunk, stream, want_layout,
                                         want_reading_order, want_tables,
-                                        want_formulas, routing);
+                                        want_formulas, routing, want_words);
       for (auto &r : part) all.push_back(std::move(r));
     }
     return all;
@@ -205,7 +205,9 @@ std::vector<OcrPipelineResult> OcrPipeline::run_batch_with_layout(
   // Launch batched recognition on rec_stream_ (pipeline parallelism)
   CUDA_CHECK(cudaEventRecord(det_event_, stream));
   CUDA_CHECK(cudaStreamWaitEvent(rec_stream_, det_event_, 0));
-  auto all_rec_results = rec_->run_multi(image_crops, rec_stream_);
+  std::vector<std::vector<std::vector<recognition::CtcWord>>> all_words;
+  auto all_rec_results = rec_->run_multi(image_crops, rec_stream_,
+                                         want_words ? &all_words : nullptr);
   // Note: rec_->run_multi() syncs rec_stream_ internally for D2H + CTC decode,
   // so no additional cudaStreamSynchronize needed here.
 
@@ -214,7 +216,9 @@ std::vector<OcrPipelineResult> OcrPipeline::run_batch_with_layout(
   const auto &dropped = rec_->last_dropped_per_image();
   for (int i = 0; i < batch_n; i++) {
     detail::combine_recognition(all_results[i], image_crops[i].boxes,
-                                all_rec_results[i]);
+                                all_rec_results[i],
+                                want_words ? &all_words[i] : nullptr,
+                                &imgs[i]);
     if (static_cast<size_t>(i) < dropped.size())
       detail::flag_dropped_crops(all_results[i], dropped[i]);
   }

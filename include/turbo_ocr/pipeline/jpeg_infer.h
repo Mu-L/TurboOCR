@@ -24,6 +24,7 @@ struct JpegRunOpts {
   // the gRPC path blocks synchronously.
   bool defer_external = false;
   bool layout_only = false;
+  bool want_words = false;
 };
 
 // Runs ON a dispatcher worker thread (call inside submit/submit_for_default):

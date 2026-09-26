@@ -1,5 +1,7 @@
 #include "turbo_ocr/recognition/ctc_decode.h"
 
+#include "turbo_ocr/common/word_split.h"
+
 #include <cstdlib>
 #include <format>
 #include <fstream>
@@ -64,6 +66,45 @@ inline bool simd_ctc_enabled() {
   return e;
 }
 #endif // TURBO_CTC_HAVE_AVX2
+
+bool use_simd_ctc() {
+#if TURBO_CTC_HAVE_AVX2
+  return simd_ctc_enabled();
+#else
+  return false;
+#endif
+}
+
+// (max, argmax) of one logit row, lowest index on ties -- the one argmax both
+// ctc_greedy_decode_raw and ctc_argmax use, so they can never disagree.
+inline std::pair<float, int> row_argmax(const float *row, int n, bool use_simd) {
+#if TURBO_CTC_HAVE_AVX2
+  if (use_simd) return argmax_avx2(row, n);
+#else
+  (void)use_simd;
+#endif
+  int index = 0;
+  float max_val = row[0];
+  for (int j = 1; j < n; j++) {
+    if (row[j] > max_val) {
+      max_val = row[j];
+      index = j;
+    }
+  }
+  return {max_val, index};
+}
+
+// First code point of a UTF-8 label (every dictionary label is one character).
+char32_t first_codepoint(const std::string &s) {
+  if (s.empty()) return 0;
+  const auto c = static_cast<unsigned char>(s[0]);
+  if (c < 0x80) return c;
+  const int extra = c >= 0xF0 ? 3 : c >= 0xE0 ? 2 : 1;
+  char32_t cp = c & (0x3Fu >> extra);
+  for (int k = 1; k <= extra && k < static_cast<int>(s.size()); ++k)
+    cp = (cp << 6) | (static_cast<unsigned char>(s[static_cast<size_t>(k)]) & 0x3Fu);
+  return cp;
+}
 } // namespace
 
 std::pair<std::string, float>
@@ -100,28 +141,10 @@ ctc_greedy_decode_raw(const float *logits, int seq_len, int num_classes,
   int count = 0;
   int last_index = -1;
 
-#if TURBO_CTC_HAVE_AVX2
-  const bool use_simd = simd_ctc_enabled();
-#endif
+  const bool use_simd = use_simd_ctc();
   for (int i = 0; i < seq_len; i++) {
-    const float *row = logits + i * num_classes;
-    int index = 0;
-    float max_val = row[0];
-#if TURBO_CTC_HAVE_AVX2
-    if (use_simd) {
-      auto [mv, mi] = argmax_avx2(row, num_classes);
-      max_val = mv;
-      index = mi;
-    } else
-#endif
-    {
-      for (int j = 1; j < num_classes; j++) {
-        if (row[j] > max_val) {
-          max_val = row[j];
-          index = j;
-        }
-      }
-    }
+    const auto [max_val, index] =
+        row_argmax(logits + i * num_classes, num_classes, use_simd);
 
     if (index != last_index) {
       if (index != 0 && index < static_cast<int>(label_list.size())) {
@@ -135,6 +158,65 @@ ctc_greedy_decode_raw(const float *logits, int seq_len, int num_classes,
   if (count > 0)
     score /= count;
   return {text, score};
+}
+
+void ctc_argmax(const float *logits, int seq_len, int num_classes,
+                int *indices, float *scores) {
+  const bool use_simd = use_simd_ctc();
+  for (int i = 0; i < seq_len; i++) {
+    const auto [max_val, index] =
+        row_argmax(logits + i * num_classes, num_classes, use_simd);
+    indices[i] = index;
+    scores[i] = max_val;
+  }
+}
+
+std::vector<CtcWord>
+ctc_greedy_decode_words(const int *indices, const float *scores, int seq_len,
+                        int input_w, int content_w,
+                        const std::vector<std::string> &label_list) {
+  std::vector<CtcWord> words;
+  if (seq_len <= 0 || content_w <= 0) return words;
+  const int n_labels = static_cast<int>(label_list.size());
+  // Timestep centre -> fraction of the content width.
+  const float step = static_cast<float>(input_w) /
+                     (static_cast<float>(seq_len) * static_cast<float>(content_w));
+
+  CtcWord cur;
+  int count = 0;
+  auto flush = [&] {
+    if (count > 0) {
+      cur.score /= static_cast<float>(count);
+      words.push_back(std::move(cur));
+    }
+    cur = CtcWord{};
+    count = 0;
+  };
+
+  int last_index = -1;
+  for (int t = 0; t < seq_len; t++) {
+    const int index = indices[t];
+    if (index != last_index && index != 0 && index < n_labels) {
+      const std::string &ch = label_list[static_cast<size_t>(index)];
+      const char32_t cp = first_codepoint(ch);
+      if (turbo_ocr::is_word_space(cp)) {
+        flush();
+      } else {
+        const bool own_word = turbo_ocr::is_standalone_word_char(cp);
+        if (own_word) flush();
+        const float x = (static_cast<float>(t) + 0.5f) * step;
+        if (count == 0) cur.first = x;
+        cur.last = x;
+        cur.text += ch;
+        cur.score += scores[t];
+        ++count;
+        if (own_word) flush();
+      }
+    }
+    last_index = index;
+  }
+  flush();
+  return words;
 }
 
 bool load_label_dict(const std::string &dict_path,

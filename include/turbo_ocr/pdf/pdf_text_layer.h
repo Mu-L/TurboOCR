@@ -19,6 +19,28 @@
 
 namespace turbo_ocr::pdf {
 
+// One character of the text layer and its box, same coordinates as the
+// lines. Characters PDFium generates without a box (inserted spaces) are left
+// out.
+struct PdfTextChar {
+  char32_t cp = 0;
+  float x0_pt = 0.0f;
+  float y0_pt = 0.0f;
+  float x1_pt = 0.0f;
+  float y1_pt = 0.0f;
+};
+
+// One word of a line (common/word_split.h rules): the union of its
+// characters' boxes, same coordinates as the line. A word hyphenated across a
+// line break comes as its two parts, each boxed on its own line.
+struct PdfTextWord {
+  std::string text;   // utf-8
+  float x0_pt = 0.0f;
+  float y0_pt = 0.0f;
+  float x1_pt = 0.0f;
+  float y1_pt = 0.0f;
+};
+
 // One "rectangle" as PDFium merges them via FPDFText_CountRects /
 // FPDFText_GetRect: a contiguous run of characters on the same baseline
 // with the same font settings. Treat it as a line fragment / phrase.
@@ -28,12 +50,14 @@ struct PdfTextLine {
   float y0_pt = 0.0f;
   float x1_pt = 0.0f;
   float y1_pt = 0.0f;
+  std::vector<PdfTextWord> words;
 };
 
 // Per-page snapshot returned by PdfDocument. The lines vector is pre-grouped
 // by PDFium — callers should emit one OCRResultItem per line directly.
 struct PdfPageText {
   std::vector<PdfTextLine> lines;
+  std::vector<PdfTextChar> chars;  // every boxed character, in text order
   float page_width_pt  = 0.0f;
   float page_height_pt = 0.0f;
   int   rotation_deg   = 0;  // 0, 90, 180, or 270
@@ -99,8 +123,12 @@ struct SanityVerdict {
 // OCR text with it when the sanity check accepts — the native layer then
 // becomes the trusted source for that region (source="pdf", confidence 1).
 // Shared by the HTTP and gRPC PDF routes (single-page and batched paths).
+// A replaced result that carries words (?words=1) gets the words of its new
+// text, each boxed from the characters of `page_text` (the page's
+// extract_page() snapshot) it was read from, so its words spell that text.
 void verify_results_with_text_layer(std::vector<OCRResultItem> &results,
                                     const PdfDocument &doc, int page_index,
-                                    int dpi);
+                                    int dpi,
+                                    const PdfPageText *page_text = nullptr);
 
 } // namespace turbo_ocr::pdf

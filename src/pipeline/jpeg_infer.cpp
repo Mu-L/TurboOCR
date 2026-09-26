@@ -92,7 +92,7 @@ OcrPipelineResult decode_jpeg_and_run(GpuPipelineEntry &e,
                 : e.pipeline->run_with_layout(
                       gpu_img, e.stream, o.want_layout, o.want_reading_order,
                       o.routing, o.defer_external, o.want_tables,
-                      o.want_formulas);
+                      o.want_formulas, o.want_words);
         out.image_cols = w;
         out.image_rows = h;
         return out;
@@ -110,7 +110,7 @@ OcrPipelineResult decode_jpeg_and_run(GpuPipelineEntry &e,
           : e.pipeline->run_with_layout(img, e.stream, o.want_layout,
                                         o.want_reading_order, o.routing,
                                         o.defer_external, o.want_tables,
-                                        o.want_formulas);
+                                        o.want_formulas, o.want_words);
   out.image_cols = img.cols;
   out.image_rows = img.rows;
   return out;

@@ -68,6 +68,9 @@ grpc_check_image_size(grpc::ServerContext *ctx, int w, int h);
 grpc_pre_decode_dim_check(grpc::ServerContext *ctx,
                           std::string_view image_data);
 [[nodiscard]] cv::Mat grpc_decode_image(std::string_view image_data);
+// One text result (and its words, when present) as a structured-mode
+// OCRResult -- shared by the image and PDF responses.
+void fill_ocr_result(ocr::OCRResult *out, const OCRResultItem &item);
 #ifndef USE_CPU_ONLY
 [[nodiscard]] std::future<pipeline::OcrPipelineResult>
 grpc_jpeg_decode_and_infer(pipeline::PipelineDispatcher &dispatcher,
@@ -75,7 +78,7 @@ grpc_jpeg_decode_and_infer(pipeline::PipelineDispatcher &dispatcher,
                            bool want_reading_order, bool want_tables = false,
                            bool want_formulas = false,
                            const backend_routing::RequestRouting &routing = {},
-                           bool layout_only = false);
+                           bool layout_only = false, bool want_words = false);
 #endif
 
 
@@ -203,7 +206,8 @@ private:
                                          bool want_tables = false,
                                          bool want_formulas = false,
                                          const backend_routing::RequestRouting &routing = {},
-                                         bool layout_only = false);
+                                         bool layout_only = false,
+                                         bool want_words = false);
 
 #ifndef USE_CPU_ONLY
   pipeline::PipelineDispatcher *dispatcher_ = nullptr;

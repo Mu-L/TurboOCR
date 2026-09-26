@@ -30,6 +30,21 @@ TEST_CASE("results_to_json single result", "[serialization]") {
   CHECK(json.back() == '}');
 }
 
+TEST_CASE("results_to_json emits words only when a result has them",
+          "[serialization]") {
+  Box line{{{{{10, 20}}, {{90, 20}}, {{90, 40}}, {{10, 40}}}}};
+  Box first{{{{{11, 22}}, {{40, 22}}, {{40, 38}}, {{11, 38}}}}};
+  Box second{{{{{50, 22}}, {{89, 22}}, {{89, 38}}, {{50, 38}}}}};
+  OCRResultItem item{.text = "Hi \"you\"", .confidence = 0.9f, .box = line};
+  CHECK(results_to_json({item}).find("words") == std::string::npos);
+  item.words = {{.text = "Hi", .confidence = 0.95f, .box = first},
+                {.text = "\"you\"", .confidence = 0.85f, .box = second}};
+  const auto json = results_to_json({item});
+  CHECK(json.find(R"("words":[{"text":"Hi","confidence":0.95,"bounding_box":[[11,22],[40,22],[40,38],[11,38]]},)"
+                  R"({"text":"\"you\"","confidence":0.85,"bounding_box":[[50,22],[89,22],[89,38],[50,38]]}])") !=
+        std::string::npos);
+}
+
 TEST_CASE("results_to_json escapes special characters", "[serialization]") {
   Box box{};
   std::vector<OCRResultItem> results = {

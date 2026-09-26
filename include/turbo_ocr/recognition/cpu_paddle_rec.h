@@ -8,6 +8,7 @@
 
 #include "turbo_ocr/engine/cpu_engine.h"
 #include "turbo_ocr/common/geometry/box.h"
+#include "turbo_ocr/recognition/ctc_decode.h"
 #include "turbo_ocr/recognition/rec_geometry.h"
 
 namespace turbo_ocr::recognition {
@@ -24,9 +25,12 @@ public:
   [[nodiscard]] bool load_dict(const std::string &dict_path);
 
   // Run recognition on image crops defined by boxes.
-  // img is the original full image (BGR, uint8).
+  // img is the original full image (BGR, uint8). When `words` is given it
+  // receives each box's CTC word segmentation (see ctc_greedy_decode_words),
+  // one entry per box; the (text, score) results are the same either way.
   [[nodiscard]] std::vector<std::pair<std::string, float>>
-  run(const cv::Mat &img, const std::vector<Box> &boxes);
+  run(const cv::Mat &img, const std::vector<Box> &boxes,
+      std::vector<std::vector<CtcWord>> *words = nullptr);
 
 private:
   std::vector<std::string> label_list_;
@@ -66,18 +70,29 @@ private:
   // mirroring the GPU batch_roi_warp kernel — the old crop-then-resize path
   // resampled twice and stretched sub-kMinRecWidth crops, destroying small
   // glyphs.
-  void preprocess_box(const cv::Mat &img, const Box &box, int target_w,
-                      std::vector<float> &buffer);
+  // Returns the content width (the crop's columns before the padding).
+  int preprocess_box(const cv::Mat &img, const Box &box, int target_w,
+                     std::vector<float> &buffer);
 
   // Batched path: bucket crops by rounded width, one ORT Run per bucket batch.
   [[nodiscard]] std::vector<std::pair<std::string, float>>
-  run_batched(const cv::Mat &img, const std::vector<Box> &boxes);
+  run_batched(const cv::Mat &img, const std::vector<Box> &boxes,
+              std::vector<std::vector<CtcWord>> *words);
+
+  // CTC-decode one crop's [seq_len, num_classes] logits, run at input width
+  // `input_w` with the text in its first `content_w` columns; fills `words`
+  // when given.
+  [[nodiscard]] std::pair<std::string, float>
+  decode_crop(const float *logits, int seq_len, int num_classes, int input_w,
+              int content_w, std::vector<CtcWord> *words);
 
   // Reused across batches to avoid per-call heap churn.
   std::vector<float> batch_buf_;   // {B,3,48,pad_w}
   std::vector<float> scratch_chw_; // {3,48,target_w} for one crop
   cv::Mat warped_;                 // preprocess_box warp output (u8 BGR)
   cv::Mat float_crop_;             // preprocess_box normalized float crop
+  std::vector<int> ts_index_;      // decode_crop per-timestep argmax
+  std::vector<float> ts_score_;
 };
 
 } // namespace turbo_ocr::recognition

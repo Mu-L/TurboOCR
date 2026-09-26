@@ -78,7 +78,7 @@ inline constexpr const char *kRoutingUnsupportedEndpoint =
 // corresponding parameter group and (for routing) selects the enforcement
 // policy. Anything not declared here is category 2 or 3 above.
 struct EndpointSpec {
-  // layout / reading_order / as_blocks / tables / formulas / text
+  // layout / reading_order / as_blocks / tables / formulas / text / words
   bool ocr_options = true;
   // text=0 (layout-only) permitted? The batched det/rec path has no
   // layout-only equivalent, so /ocr/batch declares false and the caller gets
@@ -96,8 +96,9 @@ struct EndpointSpec {
 };
 
 namespace detail {
-inline constexpr std::array<std::string_view, 6> kOcrOptionParams = {
-    "layout", "reading_order", "as_blocks", "tables", "formulas", "text"};
+inline constexpr std::array<std::string_view, 7> kOcrOptionParams = {
+    "layout", "reading_order", "as_blocks", "tables", "formulas", "text",
+    "words"};
 inline constexpr std::array<std::string_view, 2> kRoutingParams = {
     "route_table", "route_formula"};
 inline constexpr std::array<std::string_view, 3> kPixelDimParams = {

@@ -62,8 +62,8 @@ int CpuPaddleRec::rec_target_width(const Box &box) const {
   return rec_input_width(box, rec_image_h_);
 }
 
-void CpuPaddleRec::preprocess_box(const cv::Mat &img, const Box &box,
-                                  int target_w, std::vector<float> &buffer) {
+int CpuPaddleRec::preprocess_box(const cv::Mat &img, const Box &box,
+                                 int target_w, std::vector<float> &buffer) {
   // target_w >= the natural content width by construction (rec_target_width),
   // so ct.crop_width here is that same content width.
   const auto ct =
@@ -99,12 +99,30 @@ void CpuPaddleRec::preprocess_box(const cv::Mat &img, const Box &box,
                   src.ptr<float>(r),
                   static_cast<size_t>(content_w) * sizeof(float));
   }
+  return content_w;
+}
+
+std::pair<std::string, float>
+CpuPaddleRec::decode_crop(const float *logits, int seq_len, int num_classes,
+                          int input_w, int content_w,
+                          std::vector<CtcWord> *words) {
+  if (!words)
+    return ctc_greedy_decode_raw(logits, seq_len, num_classes, label_list_);
+  ts_index_.resize(static_cast<size_t>(seq_len));
+  ts_score_.resize(static_cast<size_t>(seq_len));
+  ctc_argmax(logits, seq_len, num_classes, ts_index_.data(), ts_score_.data());
+  *words = ctc_greedy_decode_words(ts_index_.data(), ts_score_.data(), seq_len,
+                                   input_w, content_w, label_list_);
+  return ctc_greedy_decode(ts_index_.data(), ts_score_.data(), seq_len,
+                           label_list_);
 }
 
 std::vector<std::pair<std::string, float>>
-CpuPaddleRec::run(const cv::Mat &img, const std::vector<Box> &boxes) {
+CpuPaddleRec::run(const cv::Mat &img, const std::vector<Box> &boxes,
+                  std::vector<std::vector<CtcWord>> *words) {
+  if (words) words->assign(boxes.size(), {});
   if (rec_batch_num_ > 1)
-    return run_batched(img, boxes);
+    return run_batched(img, boxes, words);
 
   std::vector<std::pair<std::string, float>> results;
   if (boxes.empty())
@@ -119,10 +137,11 @@ CpuPaddleRec::run(const cv::Mat &img, const std::vector<Box> &boxes) {
   namespace prof = turbo_ocr::prof;
   for (size_t i = 0; i < boxes.size(); i++) {
     int target_w;
+    int content_w;
     {
       prof::Scope _s(prof::REC_PRE);
       target_w = rec_target_width(boxes[i]);
-      preprocess_box(img, boxes[i], target_w, input_buf);
+      content_w = preprocess_box(img, boxes[i], target_w, input_buf);
     }
 
     input_shape[3] = static_cast<int64_t>(target_w);
@@ -136,7 +155,9 @@ CpuPaddleRec::run(const cv::Mat &img, const std::vector<Box> &boxes) {
       prof::Scope _s(prof::REC_DECODE);
       int seq_len = static_cast<int>(result.shape[1]);
       int num_classes = static_cast<int>(result.shape[2]);
-      results[i] = ctc_greedy_decode_raw(result.data.data(), seq_len, num_classes, label_list_);
+      results[i] = decode_crop(result.data.data(), seq_len, num_classes,
+                               target_w, content_w,
+                               words ? &(*words)[i] : nullptr);
     }
   }
 
@@ -144,7 +165,8 @@ CpuPaddleRec::run(const cv::Mat &img, const std::vector<Box> &boxes) {
 }
 
 std::vector<std::pair<std::string, float>>
-CpuPaddleRec::run_batched(const cv::Mat &img, const std::vector<Box> &boxes) {
+CpuPaddleRec::run_batched(const cv::Mat &img, const std::vector<Box> &boxes,
+                          std::vector<std::vector<CtcWord>> *words) {
   std::vector<std::pair<std::string, float>> results;
   if (boxes.empty())
     return results;
@@ -200,6 +222,7 @@ CpuPaddleRec::run_batched(const cv::Mat &img, const std::vector<Box> &boxes) {
     int orig_idx = 0;
     int target_w = 0;
     int bucket_w = 0;
+    int content_w = 0;
   };
   std::vector<BatchCrop> crops(total);
   {
@@ -207,7 +230,7 @@ CpuPaddleRec::run_batched(const cv::Mat &img, const std::vector<Box> &boxes) {
     for (int i = 0; i < total; i++) {
       int target_w = rec_target_width(boxes[i]);
       int bucket_w = snap_width_step(target_w, rec_bucket_step_);
-      crops[i] = {i, target_w, bucket_w};
+      crops[i] = {i, target_w, bucket_w, 0};
     }
   }
 
@@ -234,8 +257,9 @@ CpuPaddleRec::run_batched(const cv::Mat &img, const std::vector<Box> &boxes) {
       prof::Scope _s(prof::REC_PRE);
       batch_buf_.assign(static_cast<size_t>(cur) * row_elems, 0.0f);
       for (int j = 0; j < cur; j++) {
-        const auto &bc = crops[beg + j];
-        preprocess_box(img, boxes[bc.orig_idx], bc.target_w, scratch_chw_);
+        auto &bc = crops[beg + j];
+        bc.content_w =
+            preprocess_box(img, boxes[bc.orig_idx], bc.target_w, scratch_chw_);
         float *dst = batch_buf_.data() + static_cast<size_t>(j) * row_elems;
         const float *src = scratch_chw_.data();
         const size_t copy_bytes = static_cast<size_t>(bc.target_w) * sizeof(float);
@@ -284,8 +308,10 @@ CpuPaddleRec::run_batched(const cv::Mat &img, const std::vector<Box> &boxes) {
       const size_t row_out = static_cast<size_t>(seq_len) * num_classes;
       for (int j = 0; j < cur; j++) {
         const float *logits = logits_base + static_cast<size_t>(j) * row_out;
-        results[crops[beg + j].orig_idx] =
-            ctc_greedy_decode_raw(logits, seq_len, num_classes, label_list_);
+        const auto &bc = crops[beg + j];
+        results[bc.orig_idx] =
+            decode_crop(logits, seq_len, num_classes, pad_w, bc.content_w,
+                        words ? &(*words)[bc.orig_idx] : nullptr);
       }
     }
 

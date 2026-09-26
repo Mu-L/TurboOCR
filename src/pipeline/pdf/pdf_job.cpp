@@ -58,7 +58,7 @@ int run_streamed_render_cpu(
     int &page_failures, PdfImageMode image_mode,
     const pdf::EncodeOptions &encode_opts,
     bool autorotate, const server::OrientFunc &orient_fn,
-    bool want_tables, bool want_formulas,
+    bool want_tables, bool want_formulas, bool want_words,
     const std::function<std::string(PdfPageResult &, const cv::Mat &)>
         &render_page_markdown) {
   auto stream_handle = pdf_renderer.render_streamed(pdf_data, pdf_len, dpi,
@@ -86,6 +86,7 @@ int run_streamed_render_cpu(
         inf_opts.want_reading_order = want_reading_order;
         inf_opts.want_tables = want_tables;
         inf_opts.want_formulas = want_formulas;
+        inf_opts.want_words = want_words;
         if (mode == pdf::PdfMode::Ocr)
           pg.resolved_mode = pdf::PdfMode::Ocr;
 
@@ -110,6 +111,7 @@ int run_streamed_render_cpu(
           // det/rec entirely via run_layout_and_structure. Less efficient here,
           // but same output; fixing needs a want_text=false CPU structure mode.
           if (want_layout) {
+            inf_opts.want_words = false;  // its OCR text is discarded
             auto inf = infer(img, inf_opts);
             pg.layout = std::move(inf.layout);
             // Structure + its degradation apply to geometric pages (the router
@@ -177,7 +179,8 @@ int run_streamed_render_cpu(
   if (mode != pdf::PdfMode::Ocr)
     prepopulate_pages(mode, opts.want_layout, page_text_cache, page_results,
                       need_render, /*any_need_render=*/nullptr,
-                      opts.image_mode == PdfImageMode::Inline);
+                      opts.image_mode == PdfImageMode::Inline,
+                      opts.want_words);
 
   int decode_failures = 0;
   int page_failures = 0;
@@ -191,7 +194,7 @@ int run_streamed_render_cpu(
           opts.want_reading_order, mode, page_results, need_render,
           decode_failures, page_failures, opts.image_mode, opts.encode_opts,
           opts.autorotate, orient_fn, opts.want_tables, opts.want_formulas,
-          opts.render_page_markdown);
+          opts.want_words, opts.render_page_markdown);
       if (static_cast<int>(page_results.size()) < num_pages)
         page_results.resize(num_pages);
     }

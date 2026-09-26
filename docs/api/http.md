@@ -31,10 +31,11 @@ Parsed by `server::parse_query_options()` in
 | `as_blocks` | `0` | Emit paragraph-level `blocks`. Auto-enables `layout` + `reading_order`. |
 | `tables` | `0` | Run the table branch (SLANeXt, or a VLM backend) and emit `tables`. Strict opt-in: `1` requires a table backend configured at startup, else `400 TABLE_BACKEND_DISABLED`. Auto-enables `layout`. |
 | `formulas` | `0` | Run the formula branch (PP-FormulaNet-S, in-process ORT-CUDA-13) and emit `formulas`. Strict opt-in: `1` requires a formula backend configured at startup, else `400 FORMULA_BACKEND_DISABLED`. Auto-enables `layout`. |
-| `text` | `1` | The one opt-OUT flag. `text=0` skips text detection/recognition entirely: with `layout=1` the request is a layout-only pass (`results` comes back empty); on `/ocr/pdf`, `text=0&images=inline` is the fast page-images path with zero OCR cost, and adding `layout=1` yields layout + image per page. Rejected with `tables`/`formulas`/`as_blocks`/`reading_order` (all consume recognized text), on `/ocr/batch`, and on the CPU build. |
+| `text` | `1` | The one opt-OUT flag. `text=0` skips text detection/recognition entirely: with `layout=1` the request is a layout-only pass (`results` comes back empty); on `/ocr/pdf`, `text=0&images=inline` is the fast page-images path with zero OCR cost, and adding `layout=1` yields layout + image per page. Rejected with `tables`/`formulas`/`as_blocks`/`reading_order`/`words` (all consume recognized text), on `/ocr/batch`, and on the CPU build. |
+| `words` | `0` | Add a `words` array to every result: each word's `text`, `confidence` and its own `bounding_box` (same point order as the line's). Words split at spaces; every CJK character is a word of its own; punctuation stays with its word. Boxes are cut at the line's real ink gaps and trimmed to the word's ink. On `/ocr/pdf`, text-layer lines take their words from the PDF itself. Independent of `layout`. |
 
 !!! note "Optional fields stay byte-identical when empty"
-    `layout`, `reading_order`, `blocks`, `tables`, `formulas` are
+    `layout`, `reading_order`, `blocks`, `tables`, `formulas`, `words` are
     emitted only when non-empty — text-only pages produce a response
     indistinguishable from the pre-feature shape. See
     `emit_pipeline_result_json` in
@@ -143,6 +144,17 @@ everything else uses `cv::imdecode`.
   "tables": [],
   "formulas": []
 }
+```
+
+With `?words=1` each result also carries its words:
+
+```json
+{"text": "Hello, world", "confidence": 0.987,
+ "bounding_box": [[12,8],[180,8],[180,32],[12,32]],
+ "words": [
+   {"text": "Hello,", "confidence": 0.991, "bounding_box": [[14,10],[88,10],[88,30],[14,30]]},
+   {"text": "world", "confidence": 0.983, "bounding_box": [[97,10],[176,10],[176,30],[97,30]]}
+ ]}
 ```
 
 Error codes: `EMPTY_BODY`, `IMAGE_DECODE_FAILED`, `GPU_DECODE_FAILED`, `DIMENSIONS_TOO_LARGE`,

@@ -77,12 +77,11 @@ void CpuOcrPipeline::warmup() {
 }
 
 std::vector<OCRResultItem> CpuOcrPipeline::run(const cv::Mat &img) {
-  std::size_t num_boxes = 0;
-  return run_core_(img, num_boxes);
+  return run_core_(img, /*want_words=*/false).results;
 }
 
-std::vector<OCRResultItem> CpuOcrPipeline::run_core_(const cv::Mat &img,
-                                                     std::size_t &num_boxes) {
+OcrPipelineResult CpuOcrPipeline::run_core_(const cv::Mat &img,
+                                            bool want_words) {
   namespace prof = turbo_ocr::prof;
 
   // Detection
@@ -91,7 +90,6 @@ std::vector<OCRResultItem> CpuOcrPipeline::run_core_(const cv::Mat &img,
     prof::Scope _s(prof::DET);
     boxes = det_->run(img);
   }
-  num_boxes = boxes.size();
 
   // Sort boxes top-to-bottom, left-to-right
   {
@@ -111,29 +109,18 @@ std::vector<OCRResultItem> CpuOcrPipeline::run_core_(const cv::Mat &img,
 
   // Recognition
   std::vector<std::pair<std::string, float>> rec_results;
+  std::vector<std::vector<recognition::CtcWord>> words;
   {
     prof::Scope _s(prof::REC);
-    rec_results = rec_->run(img, boxes);
+    rec_results = rec_->run(img, boxes, want_words ? &words : nullptr);
   }
 
-  // Combine (filter by drop_score)
+  // Combine (filter by drop_score) + the text_degraded guard, shared with the
+  // GPU pipeline.
   prof::Scope _scombine(prof::COMBINE);
-  constexpr float kDropScore = turbo_ocr::kDropScore;
-  std::vector<OCRResultItem> final_results;
-  final_results.reserve(boxes.size());
-  for (size_t i = 0; i < boxes.size(); ++i) {
-    if (i < rec_results.size()) {
-      if (rec_results[i].second < kDropScore)
-        continue;
-      if (rec_results[i].first.empty())
-        continue;
-      final_results.push_back({
-        .text = std::move(rec_results[i].first),
-        .confidence = rec_results[i].second,
-        .box = boxes[i],
-      });
-    }
-  }
+  OcrPipelineResult out;
+  detail::combine_recognition(out, boxes, rec_results,
+                              want_words ? &words : nullptr, &img);
   if (rec_results.size() < boxes.size())
     // Recognizer under-ran the detector: fail loud (parity with formula/table),
     // don't silently drop detected text lines.
@@ -142,7 +129,7 @@ std::vector<OCRResultItem> CpuOcrPipeline::run_core_(const cv::Mat &img,
         "(recognizer under-run, not empty text)\n",
         rec_results.size(), boxes.size(), boxes.size() - rec_results.size());
 
-  return final_results;
+  return out;
 }
 
 bool CpuOcrPipeline::load_layout_model(const std::string &onnx_path) {
@@ -266,15 +253,10 @@ OcrPipelineResult CpuOcrPipeline::run_with_layout(const cv::Mat &img,
                                                     bool want_layout,
                                                     bool want_reading_order,
                                                     bool want_tables,
-                                                    bool want_formulas) {
-  OcrPipelineResult out;
-  std::size_t num_boxes = 0;
-  out.results = run_core_(img, num_boxes);
-  // No-silent-failure parity with the GPU pipeline: detection found text
-  // regions but recognition produced nothing usable -> flag text_degraded so a
-  // recognition failure on a text page is never a byte-identical clean empty
-  // 200. A genuinely text-free page (num_boxes == 0) is not degraded.
-  detail::flag_text_degraded(out, num_boxes);
+                                                    bool want_formulas,
+                                                    bool want_words) {
+  // run_core_ applies the no-silent-failure text_degraded guard (GPU parity).
+  OcrPipelineResult out = run_core_(img, want_words);
   if (want_layout && layout_) {
     turbo_ocr::prof::Scope _s(turbo_ocr::prof::LAYOUT);
     out.layout = layout_->run(img);

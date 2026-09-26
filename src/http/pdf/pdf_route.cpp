@@ -83,6 +83,7 @@ void register_pdf_route(server::WorkPool &pool,
     const bool want_tables = p.opts.want_tables;
     const bool want_formulas = p.opts.want_formulas;
     const bool want_text = p.opts.want_text;
+    const bool want_words = p.opts.want_words;
     const bool want_markdown = p.want_markdown;
     const bool md_as_pages = p.md_as_pages;
     const bool autorotate = p.autorotate;
@@ -98,7 +99,7 @@ void register_pdf_route(server::WorkPool &pool,
     server::submit_work(pool, std::move(callback),
         [pdf_buf, &dispatcher, &pdf_renderer, // req dropped: unused, kept the full request (raw body) resident alongside pdf_buf
          layout_enabled, want_reading_order, want_blocks, want_tables, want_formulas,
-         want_text, want_markdown, md_as_pages,
+         want_text, want_words, want_markdown, md_as_pages,
          dpi, req_mode, image_mode,
          encode_opts, max_pdf_pages, autorotate](server::DrogonCallback &cb) {
      // Wrap the whole body: post-render work (emit_pdf_response's multi-GB
@@ -120,6 +121,7 @@ void register_pdf_route(server::WorkPool &pool,
       job_opts.want_tables = want_tables;
       job_opts.want_formulas = want_formulas;
       job_opts.want_text = want_text;
+      job_opts.want_words = want_words;
       job_opts.autorotate = autorotate;
       job_opts.image_mode = image_mode;
       job_opts.encode_opts = encode_opts;
@@ -192,6 +194,7 @@ void register_pdf_route(server::WorkPool &pool,
     const bool want_tables = p.opts.want_tables;
     const bool want_formulas = p.opts.want_formulas;
     const bool want_text = p.opts.want_text;
+    const bool want_words = p.opts.want_words;
     const bool want_markdown = p.want_markdown;
     const bool md_as_pages = p.md_as_pages;
     const bool autorotate = p.autorotate;
@@ -205,6 +208,7 @@ void register_pdf_route(server::WorkPool &pool,
     server::submit_work(pool, std::move(callback),
         [pdf_buf, &infer, &pdf_renderer, want_layout,
          want_reading_order, want_blocks, want_tables, want_formulas, want_text,
+         want_words,
          dpi, want_markdown, md_as_pages,
          req_mode, image_mode, encode_opts, max_pdf_pages,
          autorotate, orient_fn](server::DrogonCallback &cb) {
@@ -239,6 +243,7 @@ void register_pdf_route(server::WorkPool &pool,
       // (text=0 is rejected at parse time on this build), but the option must
       // not silently drift the moment that changes.
       job_opts.want_text = want_text;
+      job_opts.want_words = want_words;
       job_opts.autorotate = autorotate;
       job_opts.image_mode = image_mode;
       job_opts.encode_opts = encode_opts;

@@ -23,12 +23,12 @@ grpc::Status OCRServiceImpl::Recognize(grpc::ServerContext *ctx,
     // Mirrors the HTTP text=0 combination rules: everything text-derived is
     // meaningless without recognition — fail loud, never silently empty.
     if (request->reading_order() || request->as_blocks() ||
-        request->tables() || request->formulas())
+        request->tables() || request->formulas() || request->words())
       return grpc_error(ctx, grpc::StatusCode::INVALID_ARGUMENT,
                         "INVALID_PARAMETER",
                         "layout_only returns layout regions only; it cannot "
                         "be combined with reading_order/as_blocks/tables/"
-                        "formulas");
+                        "formulas/words");
 #endif
   }
   if (auto err = grpc_check_layout_request(ctx,
@@ -42,6 +42,7 @@ grpc::Status OCRServiceImpl::Recognize(grpc::ServerContext *ctx,
   const bool want_blocks = request->as_blocks();
   const bool want_tables = request->tables();
   const bool want_formulas = request->formulas();
+  const bool want_words = request->words();
   if (want_blocks) {
     want_reading_order = true;
     want_layout = true;
@@ -90,7 +91,8 @@ grpc::Status OCRServiceImpl::Recognize(grpc::ServerContext *ctx,
 
     try {
       auto out = run_infer(img, want_layout, want_reading_order,
-                           want_tables, want_formulas, routing, layout_only);
+                           want_tables, want_formulas, routing, layout_only,
+                           want_words);
       fill_response(response, out, want_blocks);
       return grpc::Status::OK;
     } catch (const turbo_ocr::PoolExhaustedError &e) {
@@ -132,7 +134,7 @@ grpc::Status OCRServiceImpl::Recognize(grpc::ServerContext *ctx,
                                                want_layout,
                                                want_reading_order,
                                                want_tables, want_formulas,
-                                               routing, layout_only);
+                                               routing, layout_only, want_words);
         auto out = pipeline::get_with_timeout(fut, request_timeout_ms_);
         fill_response(response, out, want_blocks);
         return grpc::Status::OK;
@@ -170,7 +172,8 @@ grpc::Status OCRServiceImpl::Recognize(grpc::ServerContext *ctx,
 
   try {
     auto out = run_infer(img, want_layout, want_reading_order,
-                         want_tables, want_formulas, routing, layout_only);
+                         want_tables, want_formulas, routing, layout_only,
+                         want_words);
     fill_response(response, out, want_blocks);
     return grpc::Status::OK;
   } catch (const turbo_ocr::PoolExhaustedError &e) {

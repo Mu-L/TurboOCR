@@ -124,7 +124,8 @@ void ocr_single_page(GpuPipelineEntry &e, PdfPageSink &sink,
           ? e.pipeline->run_with_layout(img, e.stream, layout_enabled,
                                         want_reading_order, /*routing=*/{},
                                         /*defer_external=*/false,
-                                        sink.want_tables, sink.want_formulas)
+                                        sink.want_tables, sink.want_formulas,
+                                        sink.want_words)
           : (layout_enabled ? e.pipeline->run_layout_only(img, e.stream)
                             : OcrPipelineResult{});
       store_ocr_page(sink, page_idx, std::move(out), img.cols, img.rows,
@@ -226,6 +227,7 @@ void ocr_single_page(GpuPipelineEntry &e, PdfPageSink &sink,
   sink->want_tables = opts.want_tables;
   sink->want_formulas = opts.want_formulas;
   sink->want_text = opts.want_text;
+  sink->want_words = opts.want_words;
   sink->on_page_ready = opts.on_page_ready;
   sink->on_page_failed = opts.on_page_failed;
   sink->render_page_markdown = opts.render_page_markdown;
@@ -240,7 +242,8 @@ void ocr_single_page(GpuPipelineEntry &e, PdfPageSink &sink,
   if (mode != pdf::PdfMode::Ocr) {
     prepopulate_pages(mode, opts.want_layout, sink->page_text_cache,
                       sink->page_results, need_render, &any_need_render,
-                      opts.image_mode == PdfImageMode::Inline);
+                      opts.image_mode == PdfImageMode::Inline,
+                      opts.want_words);
     // ?text=0: the caller asked for no text at all — drop what the text
     // layer prefilled so geometric pages honor the contract too.
     if (!opts.want_text)

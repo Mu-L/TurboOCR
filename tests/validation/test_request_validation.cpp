@@ -140,7 +140,7 @@ TEST_CASE("spec flags derive the allowed set", "[request_validation]") {
 TEST_CASE("is_known_param covers exactly the group tables",
           "[request_validation]") {
   for (const char *p : {"layout", "reading_order", "as_blocks", "tables",
-                        "formulas", "text", "route_table", "route_formula",
+                        "formulas", "text", "words", "route_table", "route_formula",
                         "width", "height", "channels", "dpi", "mode",
                         "markdown", "as_pages", "images", "format", "lossless",
                         "png_compression", "quality", "max_side", "autorotate",

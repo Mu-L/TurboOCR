@@ -4,6 +4,7 @@
 #include "turbo_ocr/common/geometry/perspective_math.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 
 namespace turbo_ocr {
@@ -64,6 +65,16 @@ inline CropTransform compute_crop_transform(const Box &box, int target_h,
   ct.vertical = vertical;
   compute_perspective_inv(dst_f, src_f, ct.M_inv);
   return ct;
+}
+
+/// Map a point in crop (destination) space back to the source image through
+/// a CropTransform's inverse perspective matrix.
+[[nodiscard]] inline std::array<float, 2>
+apply_crop_transform_inv(const CropTransform &ct, float x, float y) noexcept {
+  const float *m = ct.M_inv;
+  float w = m[6] * x + m[7] * y + m[8];
+  if (std::fabs(w) < 1e-6f) w = (w < 0) ? -1e-6f : 1e-6f;
+  return {(m[0] * x + m[1] * y + m[2]) / w, (m[3] * x + m[4] * y + m[5]) / w};
 }
 
 } // namespace turbo_ocr

@@ -30,6 +30,9 @@ struct InferOptions {
   // times cheaper than a full OCR pass. Incompatible with tables/formulas/
   // blocks/reading_order — they all consume recognized text. GPU build only.
   bool want_text = true;
+  // ?words=1 — add each text line's words, each with its own box, to the
+  // result items. Independent of layout; nothing else changes.
+  bool want_words = false;
 
   // Per-request routing override (Tier-A): a backend NAME per modality (empty
   // == use the configured route default). Parsed from /ocr/raw query params
@@ -136,6 +139,10 @@ parse_query_options(const drogon::HttpRequestPtr &req,
   if (out->want_tables || out->want_formulas)
     out->want_layout = true;
 
+  if (auto err = parse_bool_query(req, "words", &out->want_words);
+      !err.empty())
+    return {err, "INVALID_PARAMETER"};
+
   // `text` is the one opt-OUT flag (default true); parse_bool_query's
   // absent->false convention is for opt-in flags, so only parse when present.
   out->want_text = true;
@@ -162,6 +169,9 @@ parse_query_options(const drogon::HttpRequestPtr &req,
     if (out->want_reading_order)
       return {"text=0 cannot be combined with reading_order=1 (order is "
               "computed over recognized text)", "INVALID_PARAMETER"};
+    if (out->want_words)
+      return {"text=0 cannot be combined with words=1 (words are split from "
+              "recognized text)", "INVALID_PARAMETER"};
     if (out->want_layout && !layout_available) {
       return {"text=0&layout=1 requests a layout-only run, which needs the "
               "layout model: start the server without DISABLE_LAYOUT=1",

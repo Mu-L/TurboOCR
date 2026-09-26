@@ -6,8 +6,11 @@
 #include <utility>
 #include <vector>
 
+#include <opencv2/core.hpp>
+
 #include "turbo_ocr/common/types.h"        // OCRResultItem, Box, kDropScore
 #include "turbo_ocr/pipeline/pipeline_result.h"  // OcrPipelineResult, finalize_deferred
+#include "turbo_ocr/recognition/word_boxes.h"
 
 namespace turbo_ocr::pipeline::detail {
 
@@ -41,10 +44,14 @@ inline void flag_dropped_crops(OcrPipelineResult &out, int dropped) {
 // The single combine step every pipeline path ends with: pair recognition
 // output with its boxes, drop empty/below-kDropScore results, then apply the
 // text-degraded guard. One implementation so the filter semantics can never
-// drift between the cv::Mat, GpuImage and batch paths again.
-inline void combine_recognition(OcrPipelineResult &out,
-                                const std::vector<Box> &boxes,
-                                std::vector<std::pair<std::string, float>> &rec_results) {
+// drift between the CPU, cv::Mat, GpuImage and batch paths again. With the
+// recognizer's word segmentation (`words`, one entry per box) and the host
+// pixels, every kept line also gets its word boxes.
+inline void combine_recognition(
+    OcrPipelineResult &out, const std::vector<Box> &boxes,
+    std::vector<std::pair<std::string, float>> &rec_results,
+    const std::vector<std::vector<recognition::CtcWord>> *words = nullptr,
+    const cv::Mat *img = nullptr) {
   out.results.reserve(out.results.size() + boxes.size());
   const std::size_t n = std::min(boxes.size(), rec_results.size());
   for (std::size_t i = 0; i < n; ++i) {
@@ -55,6 +62,9 @@ inline void combine_recognition(OcrPipelineResult &out,
         .confidence = rec_results[i].second,
         .box = boxes[i],
     });
+    if (words && img && i < words->size())
+      out.results.back().words =
+          recognition::locate_words(*img, boxes[i], (*words)[i], boxes);
   }
   flag_text_degraded(out, boxes.size());
 }

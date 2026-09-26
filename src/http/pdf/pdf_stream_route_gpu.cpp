@@ -241,10 +241,11 @@ void register_ocr_stream_route_gpu(server::WorkPool &pool,
       const bool want_tables = opts.want_tables;
       const bool want_formulas = opts.want_formulas;
       const bool want_text = opts.want_text;
+      const bool want_words = opts.want_words;
       auto resp = drogon::HttpResponse::newAsyncStreamResponse(
           [state, &pool, &dispatcher, &pdf_renderer, body, np, dpi, req_mode,
            image_mode, encode_opts, autorotate, want_layout, want_reading_order,
-           want_blocks, want_tables, want_formulas, want_text](
+           want_blocks, want_tables, want_formulas, want_text, want_words](
               drogon::ResponseStreamPtr stream) {
         {
           std::lock_guard<std::mutex> lk(state->mu);
@@ -254,7 +255,7 @@ void register_ocr_stream_route_gpu(server::WorkPool &pool,
           pool.submit([state, &dispatcher, &pdf_renderer, body, np, dpi,
                        req_mode, image_mode, encode_opts, autorotate,
                        want_layout, want_reading_order, want_blocks,
-                       want_tables, want_formulas, want_text] {
+                       want_tables, want_formulas, want_text, want_words] {
             state->send_line(std::format(
                 "{{\"event\":\"meta\",\"kind\":\"pdf\",\"pages\":{},\"dpi\":{},"
                 "\"mode\":\"{}\"}}", np, dpi, pdf::mode_name(req_mode)));
@@ -268,6 +269,7 @@ void register_ocr_stream_route_gpu(server::WorkPool &pool,
             job_opts.want_tables = want_tables;
             job_opts.want_formulas = want_formulas;
             job_opts.want_text = want_text;
+            job_opts.want_words = want_words;
             job_opts.autorotate = autorotate;
             job_opts.image_mode = image_mode;
             job_opts.encode_opts = encode_opts;
@@ -356,6 +358,7 @@ void register_ocr_stream_route_gpu(server::WorkPool &pool,
                   .routing = opts_v.routing_override,
                   .defer_external = true,
                   .layout_only = !opts_v.want_text,
+                  .want_words = opts_v.want_words,
               };
               auto out = dispatcher.submit_for_default([body, run_opts](auto &e) {
                 return pipeline::decode_jpeg_and_run(
@@ -413,7 +416,8 @@ void register_ocr_stream_route_gpu(server::WorkPool &pool,
                                                  opts_v.routing_override,
                                                  /*defer_external=*/true,
                                                  opts_v.want_tables,
-                                                 opts_v.want_formulas);
+                                                 opts_v.want_formulas,
+                                                 opts_v.want_words);
             });
             pipeline::finalize_deferred(out);
             std::string inner = emit_pipeline_result_json(out, opts_v.want_blocks);

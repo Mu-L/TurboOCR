@@ -21,23 +21,31 @@ namespace {
 
 // One queued (bucket, slot) inference awaiting CPU-side CTC decode.
 struct BatchRecord {
-  int beg, end, seq_len, slot;
+  int beg, end, seq_len, slot, img_w;
 };
 
-// Decode every queued batch's argmax rows into per-crop (text, score) results.
-// The ONE decode site shared by run() and run_multi(), both the mid-loop
+// Decode every queued batch's argmax rows into per-crop (text, score) results,
+// plus the word segmentation for crops whose words_at() is non-null. The ONE
+// decode site shared by run() and run_multi(), both the mid-loop
 // slot-exhaustion drains and both final passes — any change to the decode call
-// has exactly one edit site instead of four.
-template <class Slots, class Emit>
+// has exactly one edit site instead of four. A slot's h_crop_widths still
+// holds its crops' content widths here: slots are refilled only after this
+// drain.
+template <class Slots, class Emit, class WordsAt>
 void decode_records(const std::vector<BatchRecord> &records, Slots &slots,
-                    const std::vector<std::string> &labels, const Emit &emit) {
+                    const std::vector<std::string> &labels, const Emit &emit,
+                    const WordsAt &words_at) {
   for (const auto &rec : records) {
     auto &os = slots[rec.slot];
-    for (int j = 0; j < rec.end - rec.beg; ++j)
-      emit(rec.beg + j,
-           ctc_greedy_decode(os.h_indices.get() + j * rec.seq_len,
-                             os.h_scores.get() + j * rec.seq_len, rec.seq_len,
-                             labels));
+    for (int j = 0; j < rec.end - rec.beg; ++j) {
+      const int *indices = os.h_indices.get() + j * rec.seq_len;
+      const float *scores = os.h_scores.get() + j * rec.seq_len;
+      if (auto *words = words_at(rec.beg + j))
+        *words = ctc_greedy_decode_words(indices, scores, rec.seq_len,
+                                         rec.img_w, os.h_crop_widths.get()[j],
+                                         labels);
+      emit(rec.beg + j, ctc_greedy_decode(indices, scores, rec.seq_len, labels));
+    }
   }
 }
 
@@ -222,12 +230,13 @@ void PaddleRec::bake_graphs(cudaStream_t stream) {
 //   on_drop(beg, end)     -> extra accounting for a skipped over-dim batch
 //                            (dropped_crops_ is counted here already)
 //   emit_result(i, r)     -> deliver crop i's decoded (text, score)
+//   words_at(i)           -> where crop i's word segmentation goes, or null
 template <typename BucketAt, typename BoxAt, typename Warp, typename OnDrop,
-          typename Emit>
+          typename Emit, typename WordsAt>
 void PaddleRec::run_queue_loop_(int total_boxes, const BucketAt &bucket_at,
                                 const BoxAt &box_at, const Warp &warp,
                                 const OnDrop &on_drop, const Emit &emit_result,
-                                cudaStream_t stream) {
+                                const WordsAt &words_at, cudaStream_t stream) {
   std::vector<BatchRecord> batch_records;
   batch_records.reserve(16);
 
@@ -249,7 +258,8 @@ void PaddleRec::run_queue_loop_(int total_boxes, const BucketAt &bucket_at,
     // If we've exhausted our output slots, sync and decode what we have so far
     if (slot >= kMaxSlots) {
       CUDA_CHECK(cudaStreamSynchronize(stream));
-      decode_records(batch_records, output_slots_, label_list_, emit_result);
+      decode_records(batch_records, output_slots_, label_list_, emit_result,
+                     words_at);
       batch_records.clear();
       slot = 0;
     }
@@ -301,7 +311,7 @@ void PaddleRec::run_queue_loop_(int total_boxes, const BucketAt &bucket_at,
     CUDA_CHECK(cudaMemcpyAsync(os.h_scores.get(), os.d_scores.get(), dl_count * sizeof(float),
                                 cudaMemcpyDeviceToHost, stream));
 
-    batch_records.push_back({beg, end, seq_len, slot});
+    batch_records.push_back({beg, end, seq_len, slot, imgW});
     slot++;
     beg = end;
   }
@@ -310,13 +320,16 @@ void PaddleRec::run_queue_loop_(int total_boxes, const BucketAt &bucket_at,
   CUDA_CHECK(cudaStreamSynchronize(stream));
 
   // CTC decode ALL batches on CPU (all D2H transfers are complete)
-  decode_records(batch_records, output_slots_, label_list_, emit_result);
+  decode_records(batch_records, output_slots_, label_list_, emit_result,
+                     words_at);
 }
 
 std::vector<std::pair<std::string, float>>
 PaddleRec::run(const GpuImage &img, const std::vector<Box> &boxes,
-               cudaStream_t stream) {
+               cudaStream_t stream,
+               std::vector<std::vector<CtcWord>> *words) {
   std::vector<std::pair<std::string, float>> results;
+  if (words) words->assign(boxes.size(), {});
   if (boxes.empty()) [[unlikely]]
     return results;
 
@@ -356,6 +369,9 @@ PaddleRec::run(const GpuImage &img, const std::vector<Box> &boxes,
       [&](int ci, std::pair<std::string, float> &&r) {
         results[crops[ci].orig_idx] = std::move(r);
       },
+      [&](int ci) -> std::vector<CtcWord> * {
+        return words ? &(*words)[crops[ci].orig_idx] : nullptr;
+      },
       stream);
 
   return results;
@@ -363,14 +379,17 @@ PaddleRec::run(const GpuImage &img, const std::vector<Box> &boxes,
 
 std::vector<std::vector<std::pair<std::string, float>>>
 PaddleRec::run_multi(const std::vector<ImageCrops> &image_crops,
-                     cudaStream_t stream) {
+                     cudaStream_t stream,
+                     std::vector<std::vector<std::vector<CtcWord>>> *words) {
   int num_images = static_cast<int>(image_crops.size());
   std::vector<std::vector<std::pair<std::string, float>>> all_results(num_images);
+  if (words) words->assign(static_cast<size_t>(num_images), {});
 
   // Count total boxes and early-out if none
   int total_boxes = 0;
   for (int i = 0; i < num_images; i++) {
     all_results[i].resize(image_crops[i].boxes.size());
+    if (words) (*words)[static_cast<size_t>(i)].resize(image_crops[i].boxes.size());
     total_boxes += static_cast<int>(image_crops[i].boxes.size());
   }
   if (total_boxes == 0)
@@ -441,6 +460,11 @@ PaddleRec::run_multi(const std::vector<ImageCrops> &image_crops,
       [&](int ci, std::pair<std::string, float> &&r) {
         const auto &c = crops[ci];
         all_results[c.img_idx][c.box_idx] = std::move(r);
+      },
+      [&](int ci) -> std::vector<CtcWord> * {
+        if (!words) return nullptr;
+        const auto &c = crops[ci];
+        return &(*words)[static_cast<size_t>(c.img_idx)][static_cast<size_t>(c.box_idx)];
       },
       stream);
 

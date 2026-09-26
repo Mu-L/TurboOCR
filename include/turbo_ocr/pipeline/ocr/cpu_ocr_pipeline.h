@@ -60,12 +60,13 @@ public:
   /// Run OCR + optional layout detection.
   /// `want_reading_order` is opt-in and has no effect when layout is
   /// unavailable — the returned vector stays empty so the JSON serializer
-  /// omits the key.
+  /// omits the key. `want_words` adds each line's word boxes.
   [[nodiscard]] OcrPipelineResult run_with_layout(const cv::Mat &img,
                                                    bool want_layout = false,
                                                    bool want_reading_order = false,
                                                    bool want_tables = false,
-                                                   bool want_formulas = false);
+                                                   bool want_formulas = false,
+                                                   bool want_words = false);
 
 private:
   // Recognize formula + table regions of `img` from its layout boxes, filling
@@ -75,11 +76,10 @@ private:
                             bool want_tables, bool want_formulas);
 
   // Core det -> sort -> (cls) -> rec -> combine, shared by run() and
-  // run_with_layout(). Reports the detected box count via `num_boxes` so the
-  // caller can apply the no-silent-failure text_degraded guard (parity with the
-  // GPU pipeline's detail::flag_text_degraded). Public run() discards the count.
-  [[nodiscard]] std::vector<OCRResultItem> run_core_(const cv::Mat &img,
-                                                     std::size_t &num_boxes);
+  // run_with_layout(); the combine step also applies the no-silent-failure
+  // text_degraded guard (detail::combine_recognition, shared with the GPU
+  // pipeline). Public run() keeps only the results.
+  [[nodiscard]] OcrPipelineResult run_core_(const cv::Mat &img, bool want_words);
 
   std::unique_ptr<detection::CpuPaddleDet> det_;
   std::unique_ptr<classification::CpuPaddleCls> cls_;

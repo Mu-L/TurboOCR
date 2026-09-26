@@ -47,6 +47,22 @@ inline void append_ocr_item(std::string &j, const OCRResultItem &item) {
     j += ",\"layout_id\":";
     j += std::to_string(item.layout_id);
   }
+  // Word boxes exist only when the request asked for them (?words=1).
+  if (!item.words.empty()) {
+    j += ",\"words\":[";
+    for (size_t k = 0; k < item.words.size(); ++k) {
+      if (k > 0) j += ',';
+      const auto &w = item.words[k];
+      j += "{\"text\":\"";
+      append_escaped_string(j, w.text);
+      j += "\",\"confidence\":";
+      append_score(j, w.confidence);
+      j += ",\"bounding_box\":";
+      append_box(j, w.box);
+      j += '}';
+    }
+    j += ']';
+  }
   j += '}';
 }
 

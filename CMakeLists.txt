@@ -245,6 +245,7 @@ add_library(turbo_ocr_common STATIC
     src/common/cjk_stats.cpp
     src/formula/latex_extract.cpp
     src/recognition/ctc_decode.cpp
+    src/recognition/word_boxes.cpp
     src/decode/fast_png_decoder.cpp
         src/decode/host_image_pool.cpp
     src/layout/order/reading_order.cpp
@@ -281,6 +282,7 @@ add_executable(turbo_ocr_tests
     tests/server/test_language_paths.cpp
     tests/pdf/test_pdf_renderer_liveness.cpp
     tests/recognition/test_ctc_decode.cpp
+    tests/recognition/test_word_boxes.cpp
     tests/common/test_perspective.cpp
     tests/detection/test_det_postprocess.cpp
     tests/decode/test_image_dims.cpp

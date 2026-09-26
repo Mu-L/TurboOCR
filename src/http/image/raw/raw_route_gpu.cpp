@@ -97,6 +97,7 @@ void register_ocr_raw_route_gpu(server::WorkPool &pool,
               // finalize_deferred() off the worker. Local backends ignore it.
               .defer_external = true,
               .layout_only = !opts.want_text,
+              .want_words = opts.want_words,
           };
           // C4: capture `req` by value so the JPEG bytes (data/len point into
           // req->body()) stay alive if the future is abandoned on timeout and
@@ -132,7 +133,8 @@ void register_ocr_raw_route_gpu(server::WorkPool &pool,
                                                  opts.routing_override,
                                                  /*defer_external=*/true,
                                                  opts.want_tables,
-                                                 opts.want_formulas);
+                                                 opts.want_formulas,
+                                                 opts.want_words);
             },
             opts.want_blocks, cb);
       });

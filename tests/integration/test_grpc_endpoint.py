@@ -195,3 +195,35 @@ class TestGrpcEndpoint:
         req = ocr_pb2.OCRPDFRequest(pdf_data=test_pdf_bytes, mode="ocr")
         resp = grpc_stub.RecognizePDF(req, timeout=30)
         assert len(resp.pages) >= 1, "RecognizePDF returned no pages"
+
+    @staticmethod
+    def _results_with_words(msg):
+        """(text, [word texts]) per result, from json_bytes or structured mode."""
+        if msg.json_response:
+            return [(it["text"], [w["text"] for w in it.get("words", [])])
+                    for it in json.loads(msg.json_response)["results"]]
+        return [(r.text, [w.text for w in r.words]) for r in msg.results]
+
+    def test_recognize_words(self, grpc_stub, hello_image):
+        """words=True adds each line's words; without it there are none."""
+        png_bytes = pil_to_png_bytes(hello_image)
+        with_words = self._results_with_words(grpc_stub.Recognize(
+            ocr_pb2.OCRRequest(image=png_bytes, words=True), timeout=10))
+        plain = self._results_with_words(grpc_stub.Recognize(
+            ocr_pb2.OCRRequest(image=png_bytes), timeout=10))
+        assert with_words and plain
+        assert all(not words for _, words in plain)
+        for text, words in with_words:
+            assert " ".join(words) == " ".join(text.split())
+
+    def test_recognize_pdf_words(self, grpc_stub, test_pdf_bytes):
+        """RecognizePDF carries words in the OCR mode too, not only from the
+        text layer (the fixture's layer is too short to be trusted, so auto
+        OCRs it as well)."""
+        for mode in ("ocr", "auto"):
+            resp = grpc_stub.RecognizePDF(ocr_pb2.OCRPDFRequest(
+                pdf_data=test_pdf_bytes, mode=mode, words=True), timeout=60)
+            results = [r for page in resp.pages
+                       for r in self._results_with_words(page)]
+            assert results, mode
+            assert all(words for _, words in results), mode

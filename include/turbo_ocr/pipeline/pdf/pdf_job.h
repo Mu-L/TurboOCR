@@ -101,6 +101,8 @@ struct PdfJobOptions {
   // text-layer text, OCR pages run layout-only (or nothing). Combine with
   // images=inline for a fast pdf->page-images path with no GPU OCR cost.
   bool want_text = true;
+  // ?words=1 — every line (OCR'd or from the text layer) carries its words.
+  bool want_words = false;
   bool autorotate = false;
   // Streaming hooks (see PdfPageSink) — set only by /ocr/stream. on_page_ready
   // receives the finished page MOVED OUT of the sink (the aggregate result then

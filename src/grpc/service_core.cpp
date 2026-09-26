@@ -46,19 +46,8 @@ void OCRServiceImpl::fill_response(ocr::OCRResponse *response,
         turbo_ocr::emit_pipeline_result_json(out, want_blocks));
   } else {
     response->mutable_results()->Reserve(static_cast<int>(out.results.size()));
-    for (const auto &item : out.results) {
-      auto *result = response->add_results();
-      result->set_text(item.text);
-      result->set_confidence(item.confidence);
-      result->mutable_bounding_box()->Reserve(4);
-      for (int k = 0; k < 4; ++k) {
-        auto *bbox = result->add_bounding_box();
-        bbox->mutable_x()->Reserve(1);
-        bbox->mutable_y()->Reserve(1);
-        bbox->add_x(static_cast<float>(item.box[k][0]));
-        bbox->add_y(static_cast<float>(item.box[k][1]));
-      }
-    }
+    for (const auto &item : out.results)
+      fill_ocr_result(response->add_results(), item);
   }
   // Always populate the dedicated reading_order field so non-JSON
   // clients can read it without parsing json_response.
@@ -96,7 +85,7 @@ pipeline::OcrPipelineResult OCRServiceImpl::run_infer(const cv::Mat &img, bool w
                                        bool want_tables,
                                        bool want_formulas,
                                        const backend_routing::RequestRouting &routing,
-                                       bool layout_only) {
+                                       bool layout_only, bool want_words) {
   if (want_reading_order || want_tables || want_formulas)
     want_layout = want_layout || layout_available_;
   if (infer_fn_) {
@@ -110,6 +99,7 @@ pipeline::OcrPipelineResult OCRServiceImpl::run_infer(const cv::Mat &img, bool w
     opts.want_reading_order = want_reading_order;
     opts.want_tables = want_tables;
     opts.want_formulas = want_formulas;
+    opts.want_words = want_words;
     auto r = infer_fn_(img, opts);
     pipeline::OcrPipelineResult res;
     res.results          = std::move(r.results);
@@ -132,13 +122,14 @@ pipeline::OcrPipelineResult OCRServiceImpl::run_infer(const cv::Mat &img, bool w
   // may abandon the task on timeout, so it must not reference caller stack.
   return dispatcher_->submit_for_default(
       [img, want_layout, want_reading_order, want_tables, want_formulas,
-       routing, layout_only](auto &e) {
+       routing, layout_only, want_words](auto &e) {
         if (layout_only)
           return e.pipeline->run_layout_only(img, e.stream);
         return e.pipeline->run_with_layout(img, e.stream, want_layout,
                                            want_reading_order, routing,
                                            /*defer_external=*/false,
-                                           want_tables, want_formulas);
+                                           want_tables, want_formulas,
+                                           want_words);
       });
 #else
   throw std::logic_error("No inference backend configured");

@@ -58,6 +58,9 @@ message OCRRequest {
   // need recognized text) and is rejected on the CPU build — both mirror the
   // HTTP contract.
   bool layout_only = 16;
+  // Add each line's words, each with its own box, to the results (same as
+  // HTTP ?words=1). Field 20 leaves room for the v4 request fields.
+  bool words = 20;
 }
 
 message OCRBatchRequest {
@@ -75,6 +78,7 @@ message OCRBatchRequest {
   // route_formula, applied to every image in the batch.
   string route_table = 8;
   string route_formula = 9;
+  bool words = 20;           // per-line word boxes for every image (?words=1)
 }
 
 message BoundingBox {
@@ -82,10 +86,17 @@ message BoundingBox {
   repeated float y = 2;
 }
 
+message OCRWord {
+  string text = 1;
+  float confidence = 2;
+  repeated BoundingBox bounding_box = 3;  // same shape as OCRResult's
+}
+
 message OCRResult {
   string text = 1;
   float confidence = 2;
   repeated BoundingBox bounding_box = 3;
+  repeated OCRWord words = 4;  // only when the request set words
 }
 
 message OCRResponse {
@@ -136,6 +147,7 @@ message OCRPDFRequest {
   bool formulas = 7;      // run formula recognition (strict opt-in; auto-enables layout)
   bool reading_order = 8; // emit per-page reading_order (auto-enables layout);
                           // previously only available implicitly via as_blocks
+  bool words = 20;        // per-line word boxes, OCR'd and text-layer lines alike
 }
 
 message OCRPDFResponse {

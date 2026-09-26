@@ -132,6 +132,29 @@ cv::Mat grpc_decode_image(std::string_view image_data) {
       image_data.size());
 }
 
+void fill_ocr_result(ocr::OCRResult *out, const OCRResultItem &item) {
+  // One BoundingBox per corner, x/y as single-element repeats (wire shape).
+  auto add_box = [](auto *msg, const Box &box) {
+    msg->mutable_bounding_box()->Reserve(4);
+    for (int k = 0; k < 4; ++k) {
+      auto *bbox = msg->add_bounding_box();
+      bbox->mutable_x()->Reserve(1);
+      bbox->mutable_y()->Reserve(1);
+      bbox->add_x(static_cast<float>(box[k][0]));
+      bbox->add_y(static_cast<float>(box[k][1]));
+    }
+  };
+  out->set_text(item.text);
+  out->set_confidence(item.confidence);
+  add_box(out, item.box);
+  for (const auto &w : item.words) {
+    auto *word = out->add_words();
+    word->set_text(w.text);
+    word->set_confidence(w.confidence);
+    add_box(word, w.box);
+  }
+}
+
 #ifndef USE_CPU_ONLY
 // Decode + infer on a dispatcher worker thread so nvJPEG's async NVDEC work
 // runs on the pipeline's own stream — matches /ocr/raw and avoids the
@@ -142,7 +165,7 @@ grpc_jpeg_decode_and_infer(pipeline::PipelineDispatcher &dispatcher,
                            bool want_layout, bool want_reading_order,
                            bool want_tables, bool want_formulas,
                            const backend_routing::RequestRouting &routing,
-                           bool layout_only) {
+                           bool layout_only, bool want_words) {
   std::string owned(image_bytes);
   pipeline::JpegRunOpts run_opts{
       .want_layout = want_layout,
@@ -152,6 +175,7 @@ grpc_jpeg_decode_and_infer(pipeline::PipelineDispatcher &dispatcher,
       .routing = routing,
       .defer_external = false,
       .layout_only = layout_only,
+      .want_words = want_words,
   };
   return dispatcher.submit(
       [owned = std::move(owned), run_opts](auto &e) {

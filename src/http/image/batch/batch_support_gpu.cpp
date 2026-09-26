@@ -169,7 +169,8 @@ void batch_run_pipeline(pipeline::PipelineDispatcher &dispatcher,
           try {
             auto chunk_results = e.pipeline->run_batch_with_layout(
                 chunk, e.stream, want_layout, opts.want_reading_order,
-                opts.want_tables, opts.want_formulas, opts.routing_override);
+                opts.want_tables, opts.want_formulas, opts.routing_override,
+                opts.want_words);
             for (size_t j = 0; j < chunk_results.size(); ++j)
               o.outs[valid[offset + j]] = std::move(chunk_results[j]);
           } catch (const std::exception &) {
@@ -184,7 +185,7 @@ void batch_run_pipeline(pipeline::PipelineDispatcher &dispatcher,
                 o.outs[i] = e.pipeline->run_with_layout(
                     chunk[j], e.stream, want_layout, opts.want_reading_order,
                     opts.routing_override, /*defer_external=*/false,
-                    opts.want_tables, opts.want_formulas);
+                    opts.want_tables, opts.want_formulas, opts.want_words);
               } catch (const turbo_ocr::PoolExhaustedError &) {
                 throw;  // -> 503 at the route, never a per-slot tag
               } catch (const std::exception &ex) {

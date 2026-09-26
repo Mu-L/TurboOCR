@@ -39,8 +39,23 @@ namespace turbo_ocr::pipeline {
 
 namespace {
 
+// Integer pt-space box of a text-layer rect, [tl, tr, br, bl].
+Box pt_box(float x0, float y0, float x1, float y1) {
+  const int ix0 = static_cast<int>(std::round(x0));
+  const int iy0 = static_cast<int>(std::round(y0));
+  const int ix1 = static_cast<int>(std::round(x1));
+  const int iy1 = static_cast<int>(std::round(y1));
+  Box b;
+  b[0] = {ix0, iy0};
+  b[1] = {ix1, iy0};
+  b[2] = {ix1, iy1};
+  b[3] = {ix0, iy1};
+  return b;
+}
+
 void fill_from_text_layer_pt(PdfPageResult &pg,
-                                    const pdf::PdfPageText &text) {
+                                    const pdf::PdfPageText &text,
+                                    bool want_words) {
   pg.width  = static_cast<int>(std::round(text.page_width_pt));
   pg.height = static_cast<int>(std::round(text.page_height_pt));
   pg.effective_dpi = 72;
@@ -55,14 +70,14 @@ void fill_from_text_layer_pt(PdfPageResult &pg,
     item.source = "pdf";
     item.confidence = 1.0f;
     item.text = line.text;
-    int ix0 = static_cast<int>(std::round(line.x0_pt));
-    int iy0 = static_cast<int>(std::round(line.y0_pt));
-    int ix1 = static_cast<int>(std::round(line.x1_pt));
-    int iy1 = static_cast<int>(std::round(line.y1_pt));
-    item.box[0] = {ix0, iy0};
-    item.box[1] = {ix1, iy0};
-    item.box[2] = {ix1, iy1};
-    item.box[3] = {ix0, iy1};
+    item.box = pt_box(line.x0_pt, line.y0_pt, line.x1_pt, line.y1_pt);
+    if (want_words) {
+      item.words.reserve(line.words.size());
+      for (const auto &w : line.words)
+        item.words.push_back({.text = w.text,
+                              .confidence = 1.0f,
+                              .box = pt_box(w.x0_pt, w.y0_pt, w.x1_pt, w.y1_pt)});
+    }
     pg.results.push_back(std::move(item));
   }
 }
@@ -109,7 +124,7 @@ void prepopulate_pages(pdf::PdfMode mode, bool layout_or_want_layout,
                               std::vector<PdfPageResult> &page_results,
                               std::vector<uint8_t> &need_render,
                               bool *any_need_render,
-                              bool want_page_image) {
+                              bool want_page_image, bool want_words) {
   int np = static_cast<int>(page_text_cache.size());
   page_results.resize(static_cast<size_t>(np));
   need_render.assign(static_cast<size_t>(np), 0);
@@ -124,7 +139,7 @@ void prepopulate_pages(pdf::PdfMode mode, bool layout_or_want_layout,
       case pdf::PdfMode::Geometric:
         pg.resolved_mode = pdf::PdfMode::Geometric;
         if (has_good_layer) {
-          fill_from_text_layer_pt(pg, text);
+          fill_from_text_layer_pt(pg, text, want_words);
         } else {
           pg.width = static_cast<int>(std::round(text.page_width_pt));
           pg.height = static_cast<int>(std::round(text.page_height_pt));
@@ -138,7 +153,7 @@ void prepopulate_pages(pdf::PdfMode mode, bool layout_or_want_layout,
       case pdf::PdfMode::Auto:
         if (has_good_layer) {
           pg.resolved_mode = pdf::PdfMode::Geometric;
-          fill_from_text_layer_pt(pg, text);
+          fill_from_text_layer_pt(pg, text, want_words);
           if (layout_or_want_layout) {
             need_render[static_cast<size_t>(p)] = 1;
             if (any_need_render) *any_need_render = true;

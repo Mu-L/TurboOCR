@@ -78,6 +78,7 @@ grpc::Status OCRServiceImpl::RecognizePDF(grpc::ServerContext *ctx,
   job_opts.want_blocks = want_blocks;
   job_opts.want_tables = want_tables;
   job_opts.want_formulas = want_formulas;
+  job_opts.want_words = request->words();
   // Bound the GPU per-page future join with the configured request deadline so
   // a wedged page can't hang the RPC (no-op on the sequential CPU overload).
   job_opts.request_timeout_ms = request_timeout_ms_;
@@ -99,7 +100,8 @@ grpc::Status OCRServiceImpl::RecognizePDF(grpc::ServerContext *ctx,
           [this](const cv::Mat &img, const InferOptions &o) {
             auto r = run_infer(img, o.want_layout, o.want_reading_order,
                                o.want_tables, o.want_formulas,
-                               o.routing_override);
+                               o.routing_override, /*layout_only=*/false,
+                               o.want_words);
             return InferResult{
                 .results          = std::move(r.results),
                 .layout           = std::move(r.layout),
@@ -178,19 +180,7 @@ grpc::Status OCRServiceImpl::RecognizePDF(grpc::ServerContext *ctx,
 void OCRServiceImpl::fill_page_results(ocr::OCRPageResult *page,
                        const std::vector<OCRResultItem> &results) {
   page->mutable_results()->Reserve(static_cast<int>(results.size()));
-  for (const auto &item : results) {
-    auto *result = page->add_results();
-    result->set_text(item.text);
-    result->set_confidence(item.confidence);
-    result->mutable_bounding_box()->Reserve(4);
-    for (int k = 0; k < 4; ++k) {
-      auto *bbox = result->add_bounding_box();
-      bbox->mutable_x()->Reserve(1);
-      bbox->mutable_y()->Reserve(1);
-      bbox->add_x(static_cast<float>(item.box[k][0]));
-      bbox->add_y(static_cast<float>(item.box[k][1]));
-    }
-  }
+  for (const auto &item : results) fill_ocr_result(page->add_results(), item);
 }
 
 } // namespace turbo_ocr::server

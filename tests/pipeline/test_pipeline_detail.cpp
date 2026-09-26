@@ -4,6 +4,8 @@
 #include <utility>
 #include <vector>
 
+#include <opencv2/imgproc.hpp>
+
 #include "../../src/pipeline/ocr/ocr_pipeline_detail.h"
 
 using turbo_ocr::Box;
@@ -49,6 +51,32 @@ TEST_CASE("combine_recognition drops empty and low-confidence entries",
   combine_recognition(out, boxes, rec);
   REQUIRE(out.results.size() == 1);
   CHECK(out.results[0].text == "keep");
+}
+
+TEST_CASE("combine_recognition places words only for the lines it keeps",
+          "[pipeline_detail]") {
+  // Two lines of ink on a white page; the middle entry is dropped.
+  cv::Mat img(40, 200, CV_8UC3, cv::Scalar(255, 255, 255));
+  cv::rectangle(img, {3, 3}, {7, 7}, cv::Scalar(0, 0, 0), cv::FILLED);
+  std::vector<Box> boxes{box_at(0), box_at(20), box_at(40)};
+  std::vector<std::pair<std::string, float>> rec{
+      {"a", 0.9f}, {"low", 0.1f}, {"c", 0.9f}};
+  std::vector<std::vector<turbo_ocr::recognition::CtcWord>> words{
+      {{"a", 0.9f, 0.5f, 0.5f}}, {{"low", 0.1f, 0.5f, 0.5f}}, {{"c", 0.9f, 0.5f, 0.5f}}};
+  OcrPipelineResult out;
+  combine_recognition(out, boxes, rec, &words, &img);
+  REQUIRE(out.results.size() == 2);
+  REQUIRE(out.results[0].words.size() == 1);
+  CHECK(out.results[0].words[0].text == "a");
+  REQUIRE(out.results[1].words.size() == 1);
+  CHECK(out.results[1].words[0].text == "c");
+
+  // Without the request the items carry no words at all.
+  std::vector<std::pair<std::string, float>> rec2{{"a", 0.9f}};
+  OcrPipelineResult plain;
+  combine_recognition(plain, {box_at(0)}, rec2);
+  REQUIRE(plain.results.size() == 1);
+  CHECK(plain.results[0].words.empty());
 }
 
 TEST_CASE("combine_recognition tolerates a short rec vector", "[pipeline_detail]") {

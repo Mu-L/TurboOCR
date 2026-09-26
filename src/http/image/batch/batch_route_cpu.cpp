@@ -180,7 +180,7 @@ void register_ocr_batch_route_cpu(server::WorkPool &work_pool,
                 try {
                   batch_items[idx].out = handle->run_with_layout(
                       imgs[idx], want_layout, opts.want_reading_order,
-                      opts.want_tables, opts.want_formulas);
+                      opts.want_tables, opts.want_formulas, opts.want_words);
                 } catch (const std::exception &e) {
                   TOCR_LOG_ERROR("Batch image error", "route", "/ocr/batch",
                                  "image_index", idx, "error",

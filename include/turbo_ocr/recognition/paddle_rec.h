@@ -11,6 +11,7 @@
 #include "turbo_ocr/common/geometry/box.h"
 #include "turbo_ocr/common/cuda/cuda_check.h"
 #include "turbo_ocr/common/cuda/cuda_ptr.h"
+#include "turbo_ocr/recognition/ctc_decode.h"
 #include "turbo_ocr/recognition/rec_geometry.h"
 
 namespace turbo_ocr::recognition {
@@ -29,9 +30,13 @@ public:
   /// Load the character dictionary for CTC decoding.
   [[nodiscard]] bool load_dict(const std::string &dict_path);
 
+  // When `words` is given it receives each box's CTC word segmentation (see
+  // ctc_greedy_decode_words), one entry per box; the (text, score) results
+  // are the same either way.
   [[nodiscard]] std::vector<std::pair<std::string, float>>
   run(const GpuImage &img, const std::vector<Box> &boxes,
-      cudaStream_t stream = 0);
+      cudaStream_t stream = 0,
+      std::vector<std::vector<CtcWord>> *words = nullptr);
 
   // Batched recognition across multiple images.
   // Each element is (gpu_image, boxes_for_that_image).
@@ -40,9 +45,11 @@ public:
     GpuImage img;
     std::vector<Box> boxes;
   };
+  // `words`, when given, is filled per image and box like run()'s.
   [[nodiscard]] std::vector<std::vector<std::pair<std::string, float>>>
   run_multi(const std::vector<ImageCrops> &image_crops,
-            cudaStream_t stream = 0);
+            cudaStream_t stream = 0,
+            std::vector<std::vector<std::vector<CtcWord>>> *words = nullptr);
 
   // Eagerly allocate all GPU/pinned buffers (called during warmup)
   void allocate_buffers();
@@ -70,11 +77,11 @@ private:
   // result lands — expressed via the callbacks (documented at the definition
   // in paddle_rec.cpp). Instantiated only inside that TU.
   template <typename BucketAt, typename BoxAt, typename Warp, typename OnDrop,
-            typename Emit>
+            typename Emit, typename WordsAt>
   void run_queue_loop_(int total_boxes, const BucketAt &bucket_at,
                        const BoxAt &box_at, const Warp &warp,
                        const OnDrop &on_drop, const Emit &emit_result,
-                       cudaStream_t stream);
+                       const WordsAt &words_at, cudaStream_t stream);
 
   std::vector<std::string> label_list_;
   int rec_batch_num_ = 32;

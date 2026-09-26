@@ -63,8 +63,9 @@ void store_ocr_page(PdfPageSink &sink, int page_idx,
   const pdf::PdfMode page_mode = page_mode_of(sink, page_idx);
   if (page_mode == pdf::PdfMode::AutoVerified &&
       page_idx < static_cast<int>(sink.page_text_cache.size()) && sink.pdf_doc)
-    pdf::verify_results_with_text_layer(out.results, *sink.pdf_doc,
-                                        page_idx, sink.dpi);
+    pdf::verify_results_with_text_layer(
+        out.results, *sink.pdf_doc, page_idx, sink.dpi,
+        &sink.page_text_cache[static_cast<size_t>(page_idx)]);
 
   std::lock_guard<std::mutex> lock(sink.results_mutex);
   auto &slot = sink.page_results[page_idx];
@@ -84,11 +85,16 @@ void store_ocr_page(PdfPageSink &sink, int page_idx,
 void rescale_boxes_pt_to_px(std::vector<OCRResultItem> &results,
                              int dpi) {
   const float pt_to_px = static_cast<float>(dpi) / 72.0f;
-  for (auto &item : results)
+  auto scale = [pt_to_px](Box &b) {
     for (int k = 0; k < 4; ++k) {
-      item.box[k][0] = static_cast<int>(std::round(item.box[k][0] * pt_to_px));
-      item.box[k][1] = static_cast<int>(std::round(item.box[k][1] * pt_to_px));
+      b[k][0] = static_cast<int>(std::round(b[k][0] * pt_to_px));
+      b[k][1] = static_cast<int>(std::round(b[k][1] * pt_to_px));
     }
+  };
+  for (auto &item : results) {
+    scale(item.box);
+    for (auto &w : item.words) scale(w.box);
+  }
 }
 
 // Geometric page: text came from the PDF layer in pt-space. Store layout, then

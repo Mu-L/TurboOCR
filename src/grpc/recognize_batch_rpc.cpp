@@ -38,6 +38,7 @@ grpc::Status OCRServiceImpl::RecognizeBatch(grpc::ServerContext *ctx,
   const bool want_blocks = request->as_blocks();
   const bool want_tables = request->tables();
   const bool want_formulas = request->formulas();
+  const bool want_words = request->words();
   if (want_blocks) {
     want_reading_order = true;
     want_layout = true;
@@ -167,17 +168,18 @@ grpc::Status OCRServiceImpl::RecognizeBatch(grpc::ServerContext *ctx,
         if (is_jpeg[i]) {
           futs[i] = grpc_jpeg_decode_and_infer(
               *dispatcher_, request->images(i), want_layout,
-              want_reading_order, want_tables, want_formulas, routing);
+              want_reading_order, want_tables, want_formulas, routing,
+              /*layout_only=*/false, want_words);
         } else if (!imgs[i].empty()) {
           cv::Mat img_owned = std::move(imgs[i]);
           futs[i] = dispatcher_->submit(
               [img_owned = std::move(img_owned), want_layout,
-               want_reading_order, want_tables, want_formulas,
+               want_reading_order, want_tables, want_formulas, want_words,
                routing](auto &e) {
                 return e.pipeline->run_with_layout(
                     img_owned, e.stream, want_layout, want_reading_order,
                     routing, /*defer_external=*/false,
-                    want_tables, want_formulas);
+                    want_tables, want_formulas, want_words);
               });
         }
       } catch (const turbo_ocr::PoolExhaustedError &e) {
@@ -269,7 +271,8 @@ grpc::Status OCRServiceImpl::RecognizeBatch(grpc::ServerContext *ctx,
         if (imgs[i].empty()) continue;
         try {
           auto out = run_infer(imgs[i], want_layout, want_reading_order,
-                               want_tables, want_formulas, routing);
+                               want_tables, want_formulas, routing,
+                               /*layout_only=*/false, want_words);
           fill_response(entries[i], out, want_blocks);
         } catch (const std::exception &e) {
           TOCR_LOG_ERROR_RL("gRPC batch image error", "index", i, "error", e.what());

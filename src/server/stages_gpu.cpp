@@ -178,6 +178,7 @@ JpegInferFunc make_gpu_jpeg_infer_func(pipeline::PipelineDispatcher &dispatcher)
         .routing = opts.routing_override,
         .defer_external = false,
         .layout_only = !opts.want_text,
+        .want_words = opts.want_words,
     };
     auto out = dispatcher.submit_for_default([jpeg, run_opts](auto &e) {
       return pipeline::decode_jpeg_and_run(
@@ -201,16 +202,18 @@ InferFunc make_gpu_infer_func(pipeline::PipelineDispatcher &dispatcher) {
     const bool want_reading_order = opts.want_reading_order;
     const bool want_tables = opts.want_tables;
     const bool want_formulas = opts.want_formulas;
+    const bool want_words = opts.want_words;
     const auto routing_override = opts.routing_override;  // by-value (timeout-safe)
     auto out = dispatcher.submit_for_default(
         [img, want_text, want_layout, want_reading_order, want_tables,
-         want_formulas, routing_override](auto &e) {
+         want_formulas, want_words, routing_override](auto &e) {
           if (!want_text)
             return e.pipeline->run_layout_only(img, e.stream);
           return e.pipeline->run_with_layout(img, e.stream, want_layout,
                                              want_reading_order, routing_override,
                                              /*defer_external=*/false,
-                                             want_tables, want_formulas);
+                                             want_tables, want_formulas,
+                                             want_words);
         });
     // dispatch_router_ ran synchronously (defer_external defaults false on this
     // path), so out carries any table/formula structure + degradation flags.
