@@ -19,6 +19,9 @@ http {
     upstream ocr_backend {
         server 127.0.0.1:8080;
         keepalive 128;
+        # Idle keep-alive connections are dropped before the server's own idle
+        # timeout would close them under a request (entrypoint.sh).
+        keepalive_timeout ${UPSTREAM_KEEPALIVE_S}s;
     }
 
     server {
@@ -26,8 +29,11 @@ http {
 
         client_max_body_size ${MAX_BODY_MB}m;
         proxy_connect_timeout 120s;
-        proxy_read_timeout 120s;
-        proxy_send_timeout 120s;
+        # How long a request may run: the server closes a connection silent for
+        # IDLE_CONNECTION_TIMEOUT_S, and nginx gives up a second earlier so the
+        # client gets 504 Backend timeout, not 502 (entrypoint.sh).
+        proxy_read_timeout ${PROXY_TIMEOUT_S}s;
+        proxy_send_timeout ${PROXY_TIMEOUT_S}s;
         proxy_buffering off;
         proxy_request_buffering off;
         proxy_next_upstream off;

@@ -145,6 +145,7 @@ the `*_ONNX` overrides below are only needed for a non-default location.
 | Variable | Default | Description |
 |---|---|---|
 | `REQUEST_TIMEOUT_MS` | `60000` | Per-request inference deadline (ms). On overrun a single-image / batch / gRPC request returns `504 INFERENCE_TIMEOUT` and frees its GPU slot; PDF jobs bound their per-page join by the same value (scaled by page count). `0` = **disabled** (unbounded wait — the pre-v3 behaviour). Bounds `[0, 3600000]`. CLI: `--request-timeout-ms`. |
+| `IDLE_CONNECTION_TIMEOUT_S` | `120` | Seconds an HTTP connection may go without a byte read or written before the server closes it. A request is silent while it is processed (the response is written when it is done), so this is also how long one request may run: a PDF whose processing outlasts it loses its connection, whatever `REQUEST_TIMEOUT_MS` allows — that bounds each page, not the document. Raise it for long documents; `0` = no limit. In the Docker image the bundled nginx takes its proxy timeouts from it (a second less, so an overrun answers `504`; 24 h for `0`). Bounds `[0, 86400]`. CLI: `--idle-connection-timeout-s`. |
 | `PIPELINE_HARD_KILL_MS` | `600000` | Hard-kill margin (ms) for the dispatcher watchdog. After the deadline+grace trips and a recycle is requested, if the worker stays wedged mid-CUDA this long the process `_Exit`s so an orchestrator restarts it. Inert when `REQUEST_TIMEOUT_MS=0` (the watchdog only scans once a deadline is set). |
 
 !!! note "Watchdog is on by default"

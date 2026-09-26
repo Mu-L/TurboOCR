@@ -34,7 +34,8 @@ fi
 
 # Render nginx config from template — substitutes ${MAX_BODY_MB} so the
 # proxy and the C++ servers (which both read MAX_BODY_MB at startup) agree
-# on the body cap. Default 100 to match historical behaviour.
+# on the body cap (default 100 to match historical behaviour), and the
+# proxy timeouts derived from IDLE_CONNECTION_TIMEOUT_S below.
 export MAX_BODY_MB="${MAX_BODY_MB:-100}"
 # Validate up front: matches the C++ env_int(..., 1, 102400) range so the
 # nginx config rendered here and the Drogon/gRPC limits inside the
@@ -45,6 +46,27 @@ export MAX_BODY_MB="${MAX_BODY_MB:-100}"
 if ! [[ "$MAX_BODY_MB" =~ ^[1-9][0-9]*$ ]] || (( MAX_BODY_MB > 102400 )); then
   echo "[entrypoint] FATAL: MAX_BODY_MB must be a positive integer in [1, 102400] (got: '$MAX_BODY_MB')" >&2
   exit 1
+fi
+
+# The server closes a connection silent for IDLE_CONNECTION_TIMEOUT_S seconds
+# (0 = never), a request still being processed included, so that value is how
+# long one request may run. nginx has to wait as long for the response: its
+# proxy timeouts get the value less a second (so an overrun answers 504 Backend
+# timeout rather than the 502 of a dropped connection), 24 h -- the server's
+# upper bound -- for 0. Its idle upstream keep-alive connections close at half
+# the value, at most nginx's default 60 s, so it never reuses one the server is
+# about to drop. Same range check as the server.
+export IDLE_CONNECTION_TIMEOUT_S="${IDLE_CONNECTION_TIMEOUT_S:-120}"
+if ! [[ "$IDLE_CONNECTION_TIMEOUT_S" =~ ^(0|[1-9][0-9]*)$ ]] || (( IDLE_CONNECTION_TIMEOUT_S > 86400 )); then
+  echo "[entrypoint] FATAL: IDLE_CONNECTION_TIMEOUT_S must be an integer in [0, 86400] (got: '$IDLE_CONNECTION_TIMEOUT_S')" >&2
+  exit 1
+fi
+if (( IDLE_CONNECTION_TIMEOUT_S == 0 )); then
+  export PROXY_TIMEOUT_S=86400 UPSTREAM_KEEPALIVE_S=60
+else
+  export PROXY_TIMEOUT_S=$(( IDLE_CONNECTION_TIMEOUT_S > 1 ? IDLE_CONNECTION_TIMEOUT_S - 1 : 1 ))
+  UPSTREAM_KEEPALIVE_S=$(( IDLE_CONNECTION_TIMEOUT_S / 2 ))
+  export UPSTREAM_KEEPALIVE_S=$(( UPSTREAM_KEEPALIVE_S < 1 ? 1 : (UPSTREAM_KEEPALIVE_S > 60 ? 60 : UPSTREAM_KEEPALIVE_S) ))
 fi
 
 # ---- Preflight: TRT engine cache must be writable -------------------------
@@ -91,7 +113,7 @@ fi
 rm -f "${TRT_CACHE_SENTINEL}"
 
 NGINX_CONF=/tmp/nginx.conf
-envsubst '${MAX_BODY_MB}' < /app/docker/nginx.conf.template > "$NGINX_CONF"
+envsubst '${MAX_BODY_MB} ${PROXY_TIMEOUT_S} ${UPSTREAM_KEEPALIVE_S}' < /app/docker/nginx.conf.template > "$NGINX_CONF"
 
 # Start nginx reverse proxy (absorbs connection storms, keep-alive to Drogon)
 nginx -c "$NGINX_CONF"

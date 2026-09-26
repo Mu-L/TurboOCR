@@ -320,6 +320,13 @@ embedded text is trustworthy.
     `MAX_PDF_PAGES` defaults to `2000`. Exceeding returns
     `400 PDF_TOO_LARGE` with the limit echoed back in the message.
 
+!!! warning "Long documents"
+    The response is written only once the whole document is done, and a
+    connection silent for `IDLE_CONNECTION_TIMEOUT_S` (default `120`) is
+    closed — behind the bundled nginx the request then fails with `504`.
+    For documents that take longer, raise it (`0` = no limit); see the
+    [configuration reference](../build/config.md#request-lifecycle).
+
 ### PDF → Markdown (`?markdown=1`)
 
 One call converts the whole PDF to the same faithful Markdown as

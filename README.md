@@ -265,6 +265,7 @@ Common ones:
 | `LAYOUT_KEEP_NESTED_CHILDREN` | `0` | Only affects `outer`/`inner` modes: `1` still keeps the model's nested child regions (`figure_title`, `footnote`, `formula_number`, `paragraph_title`) instead of dropping them inside a parent. Formulas are always kept; no effect under default `all`. |
 | `CLS_ALL_BOXES` | `0` | `1` runs the 0°/180° orientation classifier on every text line instead of only vertical-looking ones — for scans with mixed or upside-down lines. |
 | `REQUEST_TIMEOUT_MS` | `60000` | Per-request inference deadline; on overrun returns `504` and frees the slot. `0` = unbounded (pre-v3 behaviour). |
+| `IDLE_CONNECTION_TIMEOUT_S` | `120` | How long one HTTP request may run (the server and the bundled nginx close a connection silent that long); raise it for long PDFs, `0` = no limit |
 | `PIPELINE_POOL_SIZE` | auto | Concurrent GPU pipelines |
 
 → [Full configuration reference (35+ variables)](docs/build/config.md)

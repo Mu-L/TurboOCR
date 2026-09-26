@@ -132,6 +132,8 @@ inline void require_model(const std::string &path, const char *purpose,
 // much of each body Drogon buffers in memory before spilling to a temp file. The
 // memory cap is clamped to the total cap so the in-RAM default never exceeds the
 // accepted body size. Same env vars on both servers, matching the nginx body cap.
+// IDLE_CONNECTION_TIMEOUT_S closes a connection silent that long -- a request
+// still being processed included -- and sets nginx's proxy timeouts in Docker.
 inline void run_http_server(const ServerConfig &cfg, int io_threads,
                             WorkPool &work_pool) {
   const int max_body_mb = cfg.max_body_mb;
@@ -148,7 +150,7 @@ inline void run_http_server(const ServerConfig &cfg, int io_threads,
       .setIntSignalHandler([]  { begin_graceful_shutdown("SIGINT");  })
       .addListener(cfg.host, cfg.http_port)
       .setThreadNum(io_threads)
-      .setIdleConnectionTimeout(120)
+      .setIdleConnectionTimeout(static_cast<size_t>(cfg.idle_connection_timeout_s))
       .setClientMaxBodySize(max_body_bytes)
       .setClientMaxMemoryBodySize(max_mem_bytes)
       .run();

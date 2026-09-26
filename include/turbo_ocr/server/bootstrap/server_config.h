@@ -51,6 +51,15 @@ struct ServerConfig {
   // and surfaces a timeout as 504 (see pdf_job.h).
   int request_timeout_ms = 0;  // REQUEST_TIMEOUT_MS (from_env default 60000; 0 = off)
 
+  // Seconds an HTTP connection may go without a byte read or written before the
+  // server closes it; 0 = never. A request is silent while it is processed --
+  // its response is written only once it is done -- so this also caps how long
+  // one request may take: a PDF job that outlives it loses its connection and
+  // its response, whatever REQUEST_TIMEOUT_MS allows, since that bounds each
+  // page, not the document. The Docker entrypoint sets nginx's proxy timeouts a
+  // second shorter, so there such a request ends in 504.
+  int idle_connection_timeout_s = 120;  // IDLE_CONNECTION_TIMEOUT_S / --idle-connection-timeout-s
+
   // ---- Body limits ----
   int max_body_mb     = 100;     // MAX_BODY_MB / --max-body-mb
   int max_body_mem_mb = 1024;    // MAX_BODY_MEMORY_MB / --max-body-memory-mb

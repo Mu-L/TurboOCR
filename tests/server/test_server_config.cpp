@@ -15,6 +15,7 @@ const char* const kAllEnvVars[] = {
     "TURBO_OCR_HOST",
     "BIND_HOST",
     "REQUEST_TIMEOUT_MS",
+    "IDLE_CONNECTION_TIMEOUT_S",
     "PORT",
     "GRPC_PORT",
     "MAX_BODY_MB",
@@ -86,6 +87,7 @@ TEST_CASE("from_env defaults are sane (GPU)", "[server_config]") {
   CHECK(c.pdf_daemons == 16);
   CHECK(c.pdf_workers == 4);
   CHECK(c.shutdown_grace_seconds == 30);
+  CHECK(c.idle_connection_timeout_s == 120);
   CHECK(c.grpc_cqs == 10);
   CHECK(c.grpc_batch_workers == 8);
   CHECK(c.max_pdf_pages == 2000);
@@ -482,6 +484,60 @@ TEST_CASE("BIND_HOST aliases the bind address; REQUEST_TIMEOUT_MS validates", "[
   reset_env();
   ::setenv("REQUEST_TIMEOUT_MS", "not_a_number", 1);
   CHECK_FALSE(ServerConfig::from_env(Profile::Gpu).errors.empty());
+}
+
+TEST_CASE("IDLE_CONNECTION_TIMEOUT_S: validated, 0 = no limit, on the CLI and in the config dump",
+          "[server_config]") {
+  reset_env();
+  ::setenv("IDLE_CONNECTION_TIMEOUT_S", "1800", 1);
+  auto c = ServerConfig::from_env(Profile::Cpu);
+  CHECK(c.errors.empty());
+  CHECK(c.idle_connection_timeout_s == 1800);
+  CHECK(c.to_json().find("\"idle_connection_timeout_s\":1800") != std::string::npos);
+
+  ::setenv("IDLE_CONNECTION_TIMEOUT_S", "0", 1);
+  c = ServerConfig::from_env(Profile::Cpu);
+  CHECK(c.errors.empty());
+  CHECK(c.idle_connection_timeout_s == 0);
+
+  for (const char *bad : {"-1", "86401", "2m", ""}) {
+    INFO("IDLE_CONNECTION_TIMEOUT_S=\"" << bad << "\"");
+    ::setenv("IDLE_CONNECTION_TIMEOUT_S", bad, 1);
+    // An empty value counts as unset (the default), like every strict int.
+    CHECK(ServerConfig::from_env(Profile::Cpu).errors.empty() == (*bad == '\0'));
+  }
+
+  // The flag wins over the environment.
+  reset_env();
+  ::setenv("IDLE_CONNECTION_TIMEOUT_S", "60", 1);
+  const char *argv[] = {"turboocr-cpu-server", "--idle-connection-timeout-s", "900"};
+  auto cli = ServerConfig::from_env_and_cli(3, const_cast<char **>(argv), Profile::Cpu);
+  CHECK(cli.errors.empty());
+  CHECK(cli.idle_connection_timeout_s == 900);
+}
+
+TEST_CASE("an idle limit shorter than the inference deadline warns", "[server_config]") {
+  const auto warns = [] {
+    const auto c = ServerConfig::from_env(Profile::Gpu);
+    REQUIRE(c.errors.empty());
+    for (const auto &w : c.warnings)
+      if (w.find("IDLE_CONNECTION_TIMEOUT_S") != std::string::npos) return true;
+    return false;
+  };
+  // The defaults agree: a 60 s deadline inside a 120 s idle limit.
+  reset_env();
+  CHECK_FALSE(warns());
+  // A deadline the idle limit would cut short.
+  ::setenv("REQUEST_TIMEOUT_MS", "1800000", 1);
+  CHECK(warns());
+  ::setenv("IDLE_CONNECTION_TIMEOUT_S", "1800", 1);
+  CHECK_FALSE(warns());
+  // Unbounded requests under a bounded idle limit, and the consistent pair.
+  reset_env();
+  ::setenv("REQUEST_TIMEOUT_MS", "0", 1);
+  CHECK(warns());
+  ::setenv("IDLE_CONNECTION_TIMEOUT_S", "0", 1);
+  CHECK_FALSE(warns());
 }
 
 TEST_CASE("NVJPEG_DECODERS is retired: accepted with a warning, never an error", "[server_config]") {

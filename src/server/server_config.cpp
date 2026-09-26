@@ -65,6 +65,22 @@ void cross_field_validate(ServerConfig &c, bool mem_explicit) {
                            "); clamping to body cap");
     c.max_body_mem_mb = c.max_body_mb;
   }
+  // A request is silent on its connection until its response is written, so an
+  // idle limit shorter than the inference deadline cuts requests that deadline
+  // still allows.
+  if (c.idle_connection_timeout_s > 0 && c.request_timeout_ms == 0)
+    c.warnings.push_back("REQUEST_TIMEOUT_MS=0 leaves requests unbounded, but "
+                         "IDLE_CONNECTION_TIMEOUT_S (" +
+                         std::to_string(c.idle_connection_timeout_s) +
+                         " s) still drops the connection of any request running "
+                         "longer; set IDLE_CONNECTION_TIMEOUT_S=0 for no limit");
+  else if (c.idle_connection_timeout_s > 0 &&
+           c.request_timeout_ms > 1000LL * c.idle_connection_timeout_s)
+    c.warnings.push_back("IDLE_CONNECTION_TIMEOUT_S (" +
+                         std::to_string(c.idle_connection_timeout_s) +
+                         " s) is shorter than REQUEST_TIMEOUT_MS (" +
+                         std::to_string(c.request_timeout_ms) +
+                         " ms): a request running longer loses its connection");
 }
 
 
@@ -79,6 +95,7 @@ std::string ServerConfig::to_json() const {
   j += ",\"http_port\":"         + std::to_string(http_port);
   j += ",\"grpc_port\":"         + std::to_string(grpc_port);
   j += ",\"request_timeout_ms\":" + std::to_string(request_timeout_ms);
+  j += ",\"idle_connection_timeout_s\":" + std::to_string(idle_connection_timeout_s);
   j += ",\"max_body_mb\":"       + std::to_string(max_body_mb);
   j += ",\"max_body_mem_mb\":"   + std::to_string(max_body_mem_mb);
   j += ",\"pipeline_pool_size\":" + opt_json(pipeline_pool_size);
@@ -156,6 +173,8 @@ ServerConfig ServerConfig::from_env_and_cli(int argc, char **argv,
   // may still set 0 explicitly to opt back into unbounded blocking.
   c.request_timeout_ms =
       env_int_strict("REQUEST_TIMEOUT_MS", 60000, 0, 3600000, c.errors);
+  c.idle_connection_timeout_s =
+      env_int_strict("IDLE_CONNECTION_TIMEOUT_S", 120, 0, 86400, c.errors);
 
   c.max_body_mb     = env_int_strict("MAX_BODY_MB",        100,  1, 102400, c.errors);
   c.max_body_mem_mb = env_int_strict("MAX_BODY_MEMORY_MB", 1024, 1, 102400, c.errors);
@@ -308,8 +327,12 @@ ServerConfig ServerConfig::from_env_and_cli(int argc, char **argv,
     app.add_option("--http-port",   c.http_port,   "HTTP port")->capture_default_str()->check(CLI::Range(1, 65535));
     app.add_option("--grpc-port",   c.grpc_port,   "gRPC port")->capture_default_str()->check(CLI::Range(1, 65535));
     app.add_option("--request-timeout-ms", c.request_timeout_ms,
-        "Per-request inference deadline (ms); 0 = disabled (default); >0 returns 504 on overrun")
+        "Per-request inference deadline (ms); 0 = disabled; >0 returns 504 on overrun (default 60000)")
         ->capture_default_str()->check(CLI::Range(0, 3600000));
+    app.add_option("--idle-connection-timeout-s", c.idle_connection_timeout_s,
+        "Seconds an HTTP connection may stay silent -- a request in progress included -- "
+        "before it is closed; 0 = never")
+        ->capture_default_str()->check(CLI::Range(0, 86400));
     app.add_option("--max-body-mb", c.max_body_mb, "Max request body size (MB)")->capture_default_str()->check(CLI::Range(1, 102400));
     app.add_option("--max-body-memory-mb", c.max_body_mem_mb,
         "In-memory body buffer cap (MB); always clamped to --max-body-mb so effective default is min(1024, MAX_BODY_MB)")
