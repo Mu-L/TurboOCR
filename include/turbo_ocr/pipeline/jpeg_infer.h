@@ -25,6 +25,8 @@ struct JpegRunOpts {
   bool defer_external = false;
   bool layout_only = false;
   bool want_words = false;
+  // Word boxes placed by the caller's finalize_deferred(), off the worker.
+  bool defer_words = false;
 };
 
 // Runs ON a dispatcher worker thread (call inside submit/submit_for_default):

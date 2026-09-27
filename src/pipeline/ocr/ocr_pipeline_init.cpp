@@ -2,6 +2,7 @@
 // ocr_pipeline.cpp, single-image entries in ocr_pipeline_run.cpp, the router
 // dispatch in ocr_pipeline_dispatch.cpp, batching in ocr_pipeline_batch.cpp.
 
+#include "turbo_ocr/recognition/gpu_word_placer.h"
 #include <iostream>
 #include "turbo_ocr/pipeline/ocr/ocr_pipeline.h"
 #include <unordered_map>

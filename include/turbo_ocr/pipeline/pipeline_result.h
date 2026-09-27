@@ -86,10 +86,16 @@ struct OcrPipelineResult {
   // that the formula/table stages already honour, extended to base OCR.
   bool                                   text_degraded = false;
   std::string                            text_warning;
+
+  // Word boxes still to place: set only for a caller that asked for them
+  // deferred (defer_words), which runs it through finalize_deferred() on its
+  // own thread, so the host work does not hold the GPU worker.
+  std::function<void(OcrPipelineResult &)> place_words;
 };
 
-// Await + parse + assemble any deferred external (VLM) work into out.tables /
-// out.formulas, then clear out.pending. Called on the work-pool / HTTP thread
+// Place deferred word boxes (out.place_words), then await + parse + assemble
+// any deferred external (VLM) work into out.tables / out.formulas, and clear
+// both. Called on the work-pool / HTTP thread
 // (NOT a GPU pipeline worker) after the deferred run_with_layout returns. A
 // no-op when out.pending is empty, so it is always safe to call unconditionally.
 void finalize_deferred(OcrPipelineResult &out);

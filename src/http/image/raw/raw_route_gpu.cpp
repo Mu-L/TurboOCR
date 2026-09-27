@@ -98,6 +98,7 @@ void register_ocr_raw_route_gpu(server::WorkPool &pool,
               .defer_external = true,
               .layout_only = !opts.want_text,
               .want_words = opts.want_words,
+              .defer_words = true,
           };
           // C4: capture `req` by value so the JPEG bytes (data/len point into
           // req->body()) stay alive if the future is abandoned on timeout and
@@ -134,7 +135,8 @@ void register_ocr_raw_route_gpu(server::WorkPool &pool,
                                                  /*defer_external=*/true,
                                                  opts.want_tables,
                                                  opts.want_formulas,
-                                                 opts.want_words);
+                                                 opts.want_words,
+                                                 /*defer_words=*/true);
             },
             opts.want_blocks, cb);
       });

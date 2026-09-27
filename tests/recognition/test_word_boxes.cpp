@@ -9,8 +9,10 @@
 
 #include <opencv2/imgproc.hpp>
 
+#include "turbo_ocr/common/geometry/perspective.h"
 #include "turbo_ocr/recognition/ctc_decode.h"
 #include "turbo_ocr/recognition/word_boxes.h"
+#include "../../src/recognition/word_boxes_internal.h"
 
 using turbo_ocr::Box;
 using turbo_ocr::OCRWord;
@@ -642,4 +644,111 @@ TEST_CASE("locate_words: vertical text keeps the line box's point order", "[word
   }
   // Reading order top to bottom: the first word sits higher on the page.
   CHECK(words[0].box[3][1] < words[1].box[3][1]);
+}
+
+TEST_CASE("an upright line box is cut as the exact sub-image the warp would sample",
+          "[words]") {
+  // Pages wide and tall enough for the largest coordinates a crop reaches.
+  cv::RNG rng(0x5eed);
+  for (const cv::Size page : {cv::Size(16384, 400), cv::Size(400, 16384), cv::Size(3000, 4000)}) {
+    cv::Mat img(page, CV_8UC3);
+    rng.fill(img, cv::RNG::UNIFORM, 0, 256);
+    int exact = 0, trials = 0;
+    for (int i = 0; i < 400; ++i) {
+      // Boxes with room for the crop's margins (half a line height); at the
+      // page's edge the warp's border replication decides, tested below.
+      const int h = rng.uniform(16, 161);
+      const int m0 = std::max(2, h / 2) + 1;
+      const int w = rng.uniform(20, std::min(2000, page.width - 2 * m0));
+      const int x0 = rng.uniform(m0, page.width - w - m0);
+      const int y0 = rng.uniform(m0, page.height - h - m0);
+      const Box line{{{{{x0, y0}}, {{x0 + w, y0}}, {{x0 + w, y0 + h}}, {{x0, y0 + h}}}}};
+      if (static_cast<float>(h) >= static_cast<float>(w) * turbo_ocr::kVerticalAspectRatio) continue;
+      // The crop geometry locate_words builds for this box.
+      const auto ct = turbo_ocr::compute_crop_transform(line, h, 16384);
+      const int m = std::max(2, h / 2);
+      const cv::Matx33f m_inv(ct.M_inv[0], ct.M_inv[1], ct.M_inv[2], ct.M_inv[3],
+                              ct.M_inv[4], ct.M_inv[5], ct.M_inv[6], ct.M_inv[7],
+                              ct.M_inv[8]);
+      const cv::Matx33f shift(1, 0, static_cast<float>(-m), 0, 1, static_cast<float>(-m), 0, 0, 1);
+      const cv::Size crop(ct.crop_width + 2 * m, h + 2 * m);
+      ++trials;
+      const auto r = turbo_ocr::recognition::detail::exact_subimage(m_inv * shift, crop.width,
+                                                                    crop.height, img.size());
+      if (!r) continue;
+      ++exact;
+      cv::Mat warped;
+      cv::warpPerspective(img, warped, m_inv * shift, crop,
+                          cv::INTER_LINEAR | cv::WARP_INVERSE_MAP, cv::BORDER_REPLICATE);
+      INFO("page " << page << " box " << x0 << "," << y0 << " " << w << "x" << h);
+      REQUIRE(cv::norm(warped, img(*r), cv::NORM_INF) == 0);
+    }
+    INFO("page " << page);
+    CHECK(exact * 10 > trials * 9);  // nearly every upright box takes the cut
+  }
+}
+
+TEST_CASE("a crop the warp would resample is never cut", "[words]") {
+  using turbo_ocr::recognition::detail::exact_subimage;
+  const cv::Size page(4000, 3000);
+  const cv::Matx33f shift_only(1, 0, 100, 0, 1, 200, 0, 0, 1);
+  REQUIRE(exact_subimage(shift_only, 800, 60, page) == cv::Rect(100, 200, 800, 60));
+  // A hundredth of a pixel off, a scale of 1.001, a trace of rotation or
+  // perspective: the warp interpolates, so the crop must come from it.
+  cv::Matx33f off = shift_only;  off(0, 2) += 0.01f;
+  cv::Matx33f scaled = shift_only;  scaled(0, 0) = 1.001f;
+  cv::Matx33f rotated = shift_only;  rotated(0, 1) = 0.002f;
+  cv::Matx33f persp = shift_only;  persp(2, 0) = 1e-6f;
+  CHECK_FALSE(exact_subimage(off, 800, 60, page));
+  CHECK_FALSE(exact_subimage(scaled, 800, 60, page));
+  CHECK_FALSE(exact_subimage(rotated, 800, 60, page));
+  CHECK_FALSE(exact_subimage(persp, 800, 60, page));
+  // Reaching past the page: the warp's border replication decides those pixels.
+  const cv::Matx33f edge(1, 0, -3, 0, 1, 200, 0, 0, 1);
+  CHECK_FALSE(exact_subimage(edge, 800, 60, page));
+  const cv::Matx33f far(1, 0, 3500, 0, 1, 200, 0, 0, 1);
+  CHECK_FALSE(exact_subimage(far, 800, 60, page));
+}
+
+TEST_CASE("neighbour boxes are rasterized exactly as cv::fillConvexPoly paints them",
+          "[words]") {
+  // Boxes as the line analysis meets them: upright and rotated rectangles,
+  // thin and thick, inside the crop or running off any of its sides.
+  cv::RNG rng(0xb0c5);
+  int multi = 0;
+  for (int i = 0; i < 20000; ++i) {
+    const int W = rng.uniform(40, 900), H = rng.uniform(32, 330);
+    const float cx = rng.uniform(-0.3f, 1.3f) * static_cast<float>(W);
+    const float cy = rng.uniform(-0.5f, 1.5f) * static_cast<float>(H);
+    const float bw = rng.uniform(2.0f, 1.5f * static_cast<float>(W));
+    const float bh = rng.uniform(1.0f, 1.2f * static_cast<float>(H));
+    const float ang = i % 3 == 0 ? 0.0f : rng.uniform(-0.6f, 0.6f);
+    const float ca = std::cos(ang), sa = std::sin(ang);
+    std::array<cv::Point, 4> q;
+    const float sx[4] = {-1, 1, 1, -1}, sy[4] = {-1, -1, 1, 1};
+    for (int k = 0; k < 4; ++k) {
+      const float px = 0.5f * bw * sx[k], py = 0.5f * bh * sy[k];
+      q[static_cast<size_t>(k)] = {static_cast<int>(std::lround(cx + ca * px - sa * py)),
+                                   static_cast<int>(std::lround(cy + sa * px + ca * py))};
+    }
+    cv::Mat ref = cv::Mat::zeros(H, W, CV_8U);
+    cv::fillConvexPoly(ref, q.data(), 4, 1);
+    turbo_ocr::recognition::detail::QuadRuns runs;
+    if (!turbo_ocr::recognition::detail::quad_runs(q, W, H, runs)) {
+      ++multi;
+      continue;
+    }
+    cv::Mat got = cv::Mat::zeros(H, W, CV_8U);
+    for (size_t r = 0; r < runs.rows.size(); ++r) {
+      const int y = runs.y0 + static_cast<int>(r);
+      REQUIRE(y >= 0);
+      REQUIRE(y < H);
+      const auto &row = runs.rows[r];
+      for (int x = row[0]; x <= row[1]; ++x) got.at<uchar>(y, x) = 1;
+      for (int x = row[2]; x <= row[3]; ++x) got.at<uchar>(y, x) = 1;
+    }
+    INFO("quad " << q[0] << q[1] << q[2] << q[3] << " in " << W << "x" << H);
+    REQUIRE(cv::norm(ref, got, cv::NORM_INF) == 0);
+  }
+  CHECK(multi == 0);
 }

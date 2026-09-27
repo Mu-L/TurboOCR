@@ -128,6 +128,7 @@ the `*_ONNX` overrides below are only needed for a non-default location.
 | `TRT_ENGINE_CACHE` | `~/.cache/turbo-ocr` | Directory for cached TensorRT engines (empty value resolves to the default). Mount it to share engines across restarts. CLI: `--trt-engine-cache`. |
 | `TRT_DET_WORKSPACE_GB` | `4` | Ceiling (GiB, `[1, 24]`) for the detection engine's TensorRT build workspace. The 4 GiB default fits 16 GB cards, but the `medium` detector at `DET_MAX_SIDE_LIMIT=2560` needs ~4.1 GiB — on cards with headroom set `8` or the build fails with "Could not find any implementation". Out-of-range values warn and keep the default. |
 | `TURBO_OCR_CUDA_GRAPHS` | `1` (on) | Bake CUDA graphs for the recognition batch shapes at warmup. **Default changed to ON in v3.1.0**: +10–16% throughput and lower p50 latency (recognition is launch-bound), identical accuracy, at ~0.5 GiB extra VRAM per pipeline. Set `0` to opt out on VRAM-constrained cards (or lower `PIPELINE_POOL_SIZE`). |
+| `TURBO_WORDS_GPU` | `1` (on) | Word boxes (`?words=1`) on the GPU server: the per-pixel work runs on the GPU for all lines of a page at once, the per-glyph decisions on the request thread — the same boxes as the CPU placement, to the pixel, at a fraction of the time. `0` places them on the CPU from a host copy of the page. |
 
 ## Performance / threading
 

@@ -14,6 +14,7 @@
 #include "turbo_ocr/common/log/logger.h"
 #include "turbo_ocr/common/log/timing.h"
 #include "turbo_ocr/decode/gpu_image.h"
+#include "turbo_ocr/recognition/gpu_word_placer.h"
 #include "turbo_ocr/common/serialization/serialization.h"
 #include "turbo_ocr/formula/routing/auto_cjk_formula.h"
 #include "turbo_ocr/formula/formula_recognizer.h"
@@ -96,6 +97,11 @@ cv::Mat download_page(const GpuImage &img, cudaStream_t stream) {
 }
 } // namespace
 
+turbo_ocr::recognition::GpuWordPlacer &OcrPipeline::word_placer() {
+  if (!word_placer_) word_placer_ = std::make_unique<turbo_ocr::recognition::GpuWordPlacer>();
+  return *word_placer_;
+}
+
 std::vector<OCRResultItem> OcrPipeline::run(const cv::Mat &img,
                                             cudaStream_t stream) {
   return run_with_layout(img, stream).results;
@@ -109,7 +115,8 @@ OcrPipelineResult OcrPipeline::run_with_layout(const cv::Mat &img,
                                                bool defer_external,
                                                bool want_tables,
                                                bool want_formulas,
-                                               bool want_words) {
+                                               bool want_words,
+                                               bool defer_words) {
   UseGuard _ug{in_use_, "run_with_layout"};
   const bool layout_active = use_layout_ && want_layout;
   if (img.empty()) [[unlikely]] return OcrPipelineResult{};
@@ -187,10 +194,19 @@ OcrPipelineResult OcrPipeline::run_with_layout(const cv::Mat &img,
   CUDA_CHECK(cudaEventRecord(rec_event_, rec_stream_));
 
   // Combine (filter by drop_score, matching Python's behavior); word boxes
-  // are placed on the caller's host pixels.
+  // are placed from the uploaded page on the GPU (the caller's host pixels
+  // only for the lines it hands back), or from the host pixels.
   OcrPipelineResult out;
+  const bool gpu_words = want_words && turbo_ocr::recognition::GpuWordPlacer::enabled();
+  const detail::WordPlaceFn placer =
+      [&](auto todo) -> turbo_ocr::recognition::GpuWordPlacer::Finish {
+    if (defer_words)  // off this worker: the caller finishes them
+      return word_placer().place_later(gpu_img, rec_stream_, boxes, words, std::move(todo), img);
+    return word_placer().place(gpu_img, rec_stream_, boxes, words, std::move(todo), &img);
+  };
   detail::combine_recognition(out, boxes, rec_results,
-                              want_words ? &words : nullptr, &img);
+                              want_words ? &words : nullptr, &img, defer_words,
+                              gpu_words ? &placer : nullptr);
   detail::flag_dropped_crops(out, rec_->last_dropped_crops());
 
   // Layout collect waits on d2h_event_ recorded on layout_stream_. Because
@@ -341,7 +357,8 @@ OcrPipelineResult OcrPipeline::run_with_layout(GpuImage gpu_img,
                                                bool defer_external,
                                                bool want_tables,
                                                bool want_formulas,
-                                               bool want_words) {
+                                               bool want_words,
+                                               bool defer_words) {
   UseGuard _ug{in_use_, "run_with_layout(GpuImage)"};
   const bool layout_active = use_layout_ && want_layout;
   PipelineTimer timer;
@@ -406,10 +423,19 @@ OcrPipelineResult OcrPipeline::run_with_layout(GpuImage gpu_img,
   // Combine (filter by drop_score). Word boxes are placed on the host, so a
   // request for them costs one copy of the page.
   OcrPipelineResult out;
+  const bool gpu_words = want_words && turbo_ocr::recognition::GpuWordPlacer::enabled();
+  const detail::WordPlaceFn placer =
+      [&](auto todo) -> turbo_ocr::recognition::GpuWordPlacer::Finish {
+    if (defer_words)  // off this worker: the caller finishes them
+      return word_placer().place_later(gpu_img, rec_stream_, boxes, words, std::move(todo),
+                                       cv::Mat());
+    return word_placer().place(gpu_img, rec_stream_, boxes, words, std::move(todo), nullptr);
+  };
   cv::Mat host_img;
-  if (want_words) host_img = download_page(gpu_img, rec_stream_);
+  if (want_words && !gpu_words) host_img = download_page(gpu_img, rec_stream_);
   detail::combine_recognition(out, boxes, rec_results,
-                              want_words ? &words : nullptr, &host_img);
+                              want_words ? &words : nullptr, &host_img, defer_words,
+                              gpu_words ? &placer : nullptr);
   detail::flag_dropped_crops(out, rec_->last_dropped_crops());
 
   // Layout collect — see run(cv::Mat, stream) above.

@@ -24,6 +24,7 @@
 namespace turbo_ocr::router  { class CuaRouter; }
 namespace turbo_ocr::table   { class ITableRecognizer; }
 namespace turbo_ocr::formula { class IFormulaRecognizer; }
+namespace turbo_ocr::recognition { class GpuWordPlacer; }
 
 namespace turbo_ocr::pipeline {
 
@@ -179,7 +180,9 @@ public:
   // gRPC / PDF / batch / cpu_main callers are byte-identical. Only /ocr/raw
   // (single-image, the throughput path) opts in today.
   // `want_words` adds each line's word boxes (?words=1); the GpuImage
-  // overload then copies the page to the host once for them.
+  // overload then copies the page to the host once for them. `defer_words`
+  // leaves placing them to finalize_deferred(), which the caller MUST then
+  // run (off the GPU worker); otherwise they are placed here.
   [[nodiscard]] OcrPipelineResult run_with_layout(const cv::Mat &img,
                                                    cudaStream_t stream,
                                                    bool want_layout = false,
@@ -188,7 +191,8 @@ public:
                                                    bool defer_external = false,
                                                    bool want_tables = false,
                                                    bool want_formulas = false,
-                                                   bool want_words = false);
+                                                   bool want_words = false,
+                                                   bool defer_words = false);
   [[nodiscard]] OcrPipelineResult run_with_layout(GpuImage gpu_img,
                                                    cudaStream_t stream = 0,
                                                    bool want_layout = false,
@@ -197,7 +201,8 @@ public:
                                                    bool defer_external = false,
                                                    bool want_tables = false,
                                                    bool want_formulas = false,
-                                                   bool want_words = false);
+                                                   bool want_words = false,
+                                                   bool defer_words = false);
 
   // Layout-only path: upload the image, run the PP-DocLayoutV3 inference,
   // collect the boxes, and return. Skips detection, angle classification,
@@ -259,6 +264,10 @@ public:
                         bool want_words = false);
 
 private:
+  // Word boxes with the pixel work on the GPU (created on first use).
+  std::unique_ptr<recognition::GpuWordPlacer> word_placer_;
+  recognition::GpuWordPlacer &word_placer();
+
   std::unique_ptr<detection::PaddleDet> det_;
   std::unique_ptr<classification::PaddleCls> cls_;
   std::unique_ptr<recognition::PaddleRec> rec_;

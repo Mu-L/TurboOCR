@@ -270,6 +270,13 @@ target_include_directories(turbo_ocr_common PUBLIC
 )
 target_link_libraries(turbo_ocr_common PUBLIC ${OpenCV_LIBS})
 target_compile_options(turbo_ocr_common PRIVATE ${TURBO_OCR_CXX_FLAGS})
+# Word boxes decide pixels with float geometry: evaluated as written (no fused
+# multiply-adds, which -march=x86-64-v3 / armv8.2-a would otherwise allow), so
+# every CPU target and the GPU placer (word_boxes_gpu.cu) agree to the pixel.
+if(NOT MSVC)
+    set_source_files_properties(src/recognition/word_boxes.cpp PROPERTIES
+        COMPILE_OPTIONS "-ffp-contract=off")
+endif()
 add_library(turbo_ocr::common ALIAS turbo_ocr_common)
 
 # --- C++ unit tests (Catch2, always built) ---
@@ -680,6 +687,8 @@ else()
         src/kernels/reduce_kernels.cu
         src/kernels/ccl_kernels.cu
         src/kernels/oriented_rect.cu
+        src/recognition/word_boxes_gpu.cu
+        src/recognition/gpu_word_placer.cpp
         src/pdf/render/pdf_renderer.cpp
         src/pdf/render/pdf_ppm.cpp
         src/pdf/render/pdf_daemon.cpp
@@ -729,6 +738,11 @@ else()
     # accuracy-neutral, verified) under the default AVX2 (-march=x86-64-v3) target.
     # slanext_host_decode.cpp is the ONE decode source shared with the CPU build;
     # identical flags here keep the GPU/CPU token streams bit-identical.
+    # The word placer's crop, threshold and claims must round exactly as the
+    # CPU does: no fused multiply-adds (the kernels also spell each operation
+    # with a round-to-nearest intrinsic).
+    set_source_files_properties(src/recognition/word_boxes_gpu.cu PROPERTIES
+        COMPILE_OPTIONS "--fmad=false")
     set_source_files_properties(src/table/slanext/slanext_enc_split.cpp
         src/table/slanext/slanext_host_decode.cpp PROPERTIES
         COMPILE_OPTIONS "-ffast-math;-fopenmp-simd")
@@ -787,6 +801,7 @@ else()
     # These suites need symbols that exist only in turbo_ocr_gpu (CUDA/TRT or
     # GPU-list-only TUs), so they build in the GPU configuration only.
     target_sources(turbo_ocr_tests PRIVATE
+        tests/recognition/test_word_boxes_gpu.cpp
         tests/pipeline/test_finalize_deferred.cpp
         tests/pipeline/test_multi_rec.cpp
         tests/table/test_otsl_to_html.cpp

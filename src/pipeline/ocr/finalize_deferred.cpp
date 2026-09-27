@@ -88,6 +88,11 @@ void finalize_stage(std::vector<PendingCrop> &crops,
 // Await + parse + assemble deferred external (VLM) crops, OFF the GPU worker.
 // See pipeline_result.h. No-op when out.pending is empty (sync path).
 void finalize_deferred(OcrPipelineResult &out) {
+  if (out.place_words) {
+    const auto place = std::move(out.place_words);
+    out.place_words = nullptr;
+    place(out);
+  }
   auto &pe = out.pending;
   // Backstop the future joins: the crop pool resolves every promise (success or
   // its own per-crop timeout), so this only fires if a pool worker itself died/

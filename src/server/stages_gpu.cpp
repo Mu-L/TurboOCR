@@ -180,12 +180,14 @@ JpegInferFunc make_gpu_jpeg_infer_func(pipeline::PipelineDispatcher &dispatcher)
         .defer_external = false,
         .layout_only = !opts.want_text,
         .want_words = opts.want_words,
+        .defer_words = true,
     };
     auto out = dispatcher.submit_for_default([jpeg, run_opts](auto &e) {
       return pipeline::decode_jpeg_and_run(
           e, reinterpret_cast<const unsigned char *>(jpeg->data()),
           jpeg->size(), run_opts);
     });
+    pipeline::finalize_deferred(out);  // word boxes, here instead of on the worker
     return from_pipeline_result(std::move(out));
   };
 }
@@ -214,10 +216,12 @@ InferFunc make_gpu_infer_func(pipeline::PipelineDispatcher &dispatcher) {
                                              want_reading_order, routing_override,
                                              /*defer_external=*/false,
                                              want_tables, want_formulas,
-                                             want_words);
+                                             want_words, /*defer_words=*/true);
         });
     // dispatch_router_ ran synchronously (defer_external defaults false on this
-    // path), so out carries any table/formula structure + degradation flags.
+    // path), so out carries any table/formula structure + degradation flags;
+    // only the word boxes are left, placed here instead of on the worker.
+    pipeline::finalize_deferred(out);
     return from_pipeline_result(std::move(out));
   };
 }

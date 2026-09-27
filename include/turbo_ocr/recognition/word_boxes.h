@@ -1,5 +1,6 @@
 #pragma once
 
+#include <optional>
 #include <vector>
 
 #include <opencv2/core.hpp>
@@ -28,5 +29,18 @@ namespace turbo_ocr::recognition {
 locate_words(const cv::Mat &img, const Box &line,
              const std::vector<CtcWord> &words,
              const std::vector<Box> &page_lines = {});
+
+namespace detail {
+
+// The page rectangle a W x H line crop is when `to_page` (crop pixel -> page
+// pixel) puts every crop pixel on a page pixel: scale 1, no rotation, whole
+// offset, within 1/1024 px at the crop's corners, and the rectangle inside the
+// page. Warping then only copies pixels -- with either OpenCV warp (fixed-point
+// taps below 1/64 px of offset, float taps below ~1/500) -- so locate_words
+// cuts the sub-image instead, byte for byte the same crop. Otherwise nullopt.
+[[nodiscard]] std::optional<cv::Rect> exact_subimage(const cv::Matx33f &to_page,
+                                                     int W, int H, cv::Size page);
+
+} // namespace detail
 
 } // namespace turbo_ocr::recognition

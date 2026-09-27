@@ -359,6 +359,7 @@ void register_ocr_stream_route_gpu(server::WorkPool &pool,
                   .defer_external = true,
                   .layout_only = !opts_v.want_text,
                   .want_words = opts_v.want_words,
+                  .defer_words = true,
               };
               auto out = dispatcher.submit_for_default([body, run_opts](auto &e) {
                 return pipeline::decode_jpeg_and_run(
@@ -417,7 +418,8 @@ void register_ocr_stream_route_gpu(server::WorkPool &pool,
                                                  /*defer_external=*/true,
                                                  opts_v.want_tables,
                                                  opts_v.want_formulas,
-                                                 opts_v.want_words);
+                                                 opts_v.want_words,
+                                                 /*defer_words=*/true);
             });
             pipeline::finalize_deferred(out);
             std::string inner = emit_pipeline_result_json(out, opts_v.want_blocks);
