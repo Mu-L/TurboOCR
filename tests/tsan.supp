@@ -1,0 +1,7 @@
+# ThreadSanitizer suppressions for the unit tests (CI sanitizers job:
+# TSAN_OPTIONS=suppressions=tests/tsan.supp). Uninstrumented system libraries
+# only, never our code.
+#
+# libgdal, which Ubuntu's OpenCV imgcodecs loads, takes its own mutexes in an
+# order TSan reports as a potential deadlock.
+deadlock:libgdal.so

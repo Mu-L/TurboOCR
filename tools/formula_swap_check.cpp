@@ -5,10 +5,10 @@
 #include <cstdlib>
 #include <iostream>
 
-#include "turbo_ocr/routing/routing_config.h"
+#include "turbo_ocr/backend_routing/routing_config.h"
 
 int main() {
-  using namespace turbo_ocr::routing;
+  using namespace turbo_ocr::backend_routing;
   for (const char *be : {"ppformulanet_s", "ppformulanet_plus_m", "vlm", "bogus_engine"}) {
     ::setenv("FORMULA_BACKEND", be, 1);
     try {

@@ -92,12 +92,17 @@ TEST_CASE("concurrent users never exceed the slot count and all buffers come bac
   constexpr size_t kSlots = 3;
   HostImagePool pool(kSlots, 64 * MiB, HostImagePool::heap_memory(), 1 * MiB, std::chrono::milliseconds{2});
   std::atomic<size_t> peak{0};
+  // Catch2 assertions are not thread-safe: workers count, the main thread checks.
+  std::atomic<int> empty{0};
   std::vector<std::thread> ts;
   for (int t = 0; t < 8; ++t) {
     ts.emplace_back([&] {
       for (int i = 0; i < 200; ++i) {
         cv::Mat m = pooled(pool, 800, 800);
-        REQUIRE(!m.empty());
+        if (m.empty()) {
+          ++empty;
+          continue;
+        }
         m.at<uchar>(0, 0) = 1;
         const size_t now = pool.stats().in_use;
         size_t seen = peak.load();
@@ -107,6 +112,7 @@ TEST_CASE("concurrent users never exceed the slot count and all buffers come bac
     });
   }
   for (auto &t : ts) t.join();
+  REQUIRE(empty.load() == 0);
   CHECK(peak.load() <= kSlots);
   CHECK(pool.stats().in_use == 0);
   CHECK(pool.stats().created <= kSlots);

@@ -89,7 +89,9 @@ class TestLayoutOnlyImage:
         r = requests.post(f"{server_url}/ocr/batch?text=0&layout=1",
                           json={"images": [b64]}, timeout=15)
         assert r.status_code == 400
-        assert "batch" in r.json()["error"]["message"].lower()
+        err = r.json()["error"]
+        assert err["code"] == "INVALID_PARAMETER"
+        assert "text=0" in err["message"]
 
 
 class TestLayoutOnlyPdf:

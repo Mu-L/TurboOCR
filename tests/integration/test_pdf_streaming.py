@@ -270,13 +270,17 @@ class TestPdfEdgeCases:
         r = requests.post(f"{server_url}/ocr/pdf?dpi=10", data=pdf, timeout=10)
         assert r.status_code == 400
 
-    def test_invalid_mode_fallback(self, server_url):
-        """Invalid mode should fall back to default, not crash."""
+    def test_invalid_mode_rejected(self, server_url):
+        """An unknown mode is rejected up front, naming the valid ones -- it
+        must not silently fall back to a different extraction mode."""
         pdf = _make_pdf(1)
         r = requests.post(
             f"{server_url}/ocr/pdf?mode=nonexistent", data=pdf, timeout=30
         )
-        assert r.status_code == 200
+        assert r.status_code == 400
+        err = r.json()["error"]
+        assert err["code"] == "INVALID_PARAMETER"
+        assert "geometric" in err["message"]
 
     def test_multipart_wrong_field_name(self, server_url):
         """Multipart with wrong field name should return 400."""

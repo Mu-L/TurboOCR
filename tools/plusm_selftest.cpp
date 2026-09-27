@@ -8,7 +8,7 @@
 #include <iostream>
 #include <string>
 
-#include "turbo_ocr/formula/ppformulanet_ort.h"
+#include "turbo_ocr/formula/ppformulanet/ppformulanet_ort.h"
 
 int main(int argc, char **argv) {
   std::string backend = argc > 1 ? argv[1] : "ppformulanet_plus_m";

@@ -172,7 +172,7 @@ the `*_ONNX` overrides below are only needed for a non-default location.
 | `GRPC_PORT` | `50051` | gRPC bind port. Must differ from `PORT` (fatal otherwise). Bounds `[1, 65535]`. CLI: `--grpc-port`. |
 | `GRPC_RESPONSE_MODE` | `json_bytes` | gRPC response format: `json_bytes` or `structured`. CLI: `--grpc-response-mode`. |
 | `SHUTDOWN_GRACE_SECONDS` | `30` | Drain time for inflight requests on SIGTERM/SIGINT before teardown. Bounds `[0, 600]`. CLI: `--shutdown-grace`. |
-| `DISABLE_ANGLE_CLS` | `0` | `1` skips the angle classifier (~0.4 ms savings). CLI: `--disable-angle-cls`. |
+| `DISABLE_ANGLE_CLS` | `0` | `1` skips the angle classifier (~0.4 ms savings). Tall text lines are then read as PaddleOCR crops them, turned a quarter anticlockwise: vertical CJK columns and Latin text running top to bottom come out right, Latin text running bottom to top (a rotated axis label or table header) upside down — the classifier is what flips those. CLI: `--disable-angle-cls`. |
 
 ## Logging
 

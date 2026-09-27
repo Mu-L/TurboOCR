@@ -188,18 +188,21 @@ sequenceDiagram
   CPU->>CPU: decode rows -> LayoutBox[] + NMS + containment + big-image filter
 ```
 
-## Reading-order seed
+## Reading order
 
 Each row's column 6 (`read_order`) is the model's own reading-order index.
-`OcrPipeline::run_with_layout` uses it indirectly: when `want_reading_order` is
-set, `turbo_ocr::layout::assign_reading_order_for_results` re-derives an order
-over the post-NMS regions plus synthetic XY-cut entries for results that did
-not land inside any layout box
-([`ocr_pipeline.cpp:730-734`](https://github.com/aiptimizer/TurboOCR/blob/main/src/pipeline/ocr_pipeline.cpp)).
+When `want_reading_order` is set,
+`turbo_ocr::layout::assign_reading_order_for_results` orders the post-NMS
+regions by it, as PaddleOCR-VL does, keeping stacked paragraphs of one column
+top to bottom; the lines inside a region follow in row order, and a line
+outside every region goes after the region directly above it in its column.
+When the model's order is missing or degenerate (every region must carry its
+own rank; ties mean the order head gave none), the geometric fallback below
+runs instead.
 
-### Strata
+### Fallback: strata and XY-cut
 
-Before XY-cut runs, classes are partitioned into three strata so page furniture
+For the fallback, classes are partitioned into three strata so page furniture
 lands in the right slot regardless of where the detector placed it. The
 membership is `reading_priority_bucket` in
 [`layout_types.h:66-85`](https://github.com/aiptimizer/TurboOCR/blob/main/include/turbo_ocr/layout/layout_types.h):
@@ -213,7 +216,9 @@ membership is `reading_priority_bucket` in
 `number` (page numbers) stays in BODY because it can sit at the top *or* the
 bottom of a page — XY-cut places it by geometry. Within each bucket XY-cut
 still applies, so multi-line headers, footers, and reference lists keep their
-natural left-to-right / top-to-bottom order. The class IDs above are pinned
+natural left-to-right / top-to-bottom order; in the BODY it splits touching or
+skewed columns and sets column-spanning boxes aside, and results outside every
+region join as synthetic entries. The class IDs above are pinned
 with `static_assert` against `kLayoutLabels`
 ([`layout_types.h:89-96`](https://github.com/aiptimizer/TurboOCR/blob/main/include/turbo_ocr/layout/layout_types.h)),
 so a future PaddleX label re-shuffle fails the build instead of silently

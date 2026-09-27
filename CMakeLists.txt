@@ -320,6 +320,7 @@ add_executable(turbo_ocr_tests
     tests/table/test_slanext_dict.cpp
     tests/table/test_slanext_postprocess.cpp
     tests/table/test_slanext_postprocess_aabb.cpp
+    tests/sanitizer_setup.cpp
     third_party/catch2/catch_amalgamated.cpp
 )
 # Host-logic suites above resolve their symbols from turbo_ocr_cpu on the CPU

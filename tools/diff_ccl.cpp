@@ -5,8 +5,8 @@
 // Build: cmake --build build --target diff_ccl
 // Run:   ./build/diff_ccl path/to/image.png [more.png ...]
 #include "turbo_ocr/detection/paddle_det.h"
-#include "turbo_ocr/engine/onnx_to_trt.h"
-#include "turbo_ocr/common/cuda_check.h"
+#include "turbo_ocr/engine/trt/onnx_to_trt.h"
+#include "turbo_ocr/common/cuda/cuda_check.h"
 #include "turbo_ocr/decode/gpu_image.h"
 
 #include <opencv2/imgcodecs.hpp>

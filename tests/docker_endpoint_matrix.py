@@ -14,6 +14,8 @@ Usage:
     python tests/docker_endpoint_matrix.py                  # full matrix
     python tests/docker_endpoint_matrix.py --image gpu      # GPU only
     python tests/docker_endpoint_matrix.py --only latin     # one language
+    python tests/docker_endpoint_matrix.py --base-url http://127.0.0.1:8080
+                                  # a server already running (OCR_LANG=--lang)
 
 Exit 0 iff every cell passes, 1 otherwise.
 """
@@ -39,39 +41,59 @@ PDF_FIXTURE = REPO / "tests" / "fixtures" / "pdf" / "simple_letter.pdf"
 
 SUPPORTED_LANGS = ["latin", "chinese", "greek", "eslav", "arabic", "korean", "thai"]
 
-# (lang, font, lines, min_char_recall)
+# Font candidates per script: the first file present wins, so the matrix runs
+# on Arch (/usr/share/fonts/TTF, noto) and Debian/Ubuntu (truetype/, opentype/)
+# hosts alike.
+DEJAVU = ("/usr/share/fonts/TTF/DejaVuSans.ttf",
+          "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
+NOTO_SANS = ("/usr/share/fonts/noto/NotoSans-Regular.ttf",
+             "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf") + DEJAVU
+NOTO_ARABIC = ("/usr/share/fonts/noto/NotoNaskhArabic-Regular.ttf",
+               "/usr/share/fonts/truetype/noto/NotoNaskhArabic-Regular.ttf")
+NOTO_THAI = ("/usr/share/fonts/noto/NotoSansThai-Regular.ttf",
+             "/usr/share/fonts/truetype/noto/NotoSansThai-Regular.ttf")
+CJK = ("/tmp/ocr_zh_bench/NotoSansSC.otf", "/tmp/fonts/NotoSansKR.otf",
+       "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+       "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc")
+
+
+def first_font(candidates: tuple[str, ...]) -> str | None:
+    return next((f for f in candidates if Path(f).exists()), None)
+
+
+# (lang, font candidates, lines, min_char_recall)
 CASES = {
-    "latin":   ("/usr/share/fonts/TTF/DejaVuSans.ttf", [
+    "latin":   (DEJAVU, [
         "Invoice INV-2024-001",
         "Total USD 1,234.56",
         "Acme Corporation",
     ], 0.90),
-    "chinese": ("/tmp/ocr_zh_bench/NotoSansSC.otf", [
+    "chinese": (CJK, [
         "发票编号 INV-2024-001",
         "金额 合计 壹万贰仟元整",
         "会议通知请全体员工",
     ], 0.95),
-    "greek":   ("/usr/share/fonts/TTF/DejaVuSans.ttf", [
+    "greek":   (DEJAVU, [
         "Αθήνα Ελλάδα Θεσσαλονίκη",
         "Ωραίος καιρός σήμερα",
         "Καλημέρα κόσμε",
     ], 0.95),
-    "eslav":   ("/usr/share/fonts/noto/NotoSans-Regular.ttf", [
+    "eslav":   (NOTO_SANS, [
         "Добро пожаловать",
         "Москва Санкт-Петербург",
         "Привет мир",
     ], 0.95),
-    "arabic":  ("/usr/share/fonts/noto/NotoNaskhArabic-Regular.ttf", [
+    "arabic":  (NOTO_ARABIC, [
         "مرحبا بالعالم",
         "القاهرة دبي الرياض",
         "اللغة العربية",
     ], 0.85),
-    "korean":  ("/tmp/fonts/NotoSansKR.otf", [
+    "korean":  (CJK, [
         "안녕하세요 한국",
         "서울 부산 제주도",
         "오늘 날씨 좋다",
     ], 0.95),
-    "thai":    ("/usr/share/fonts/noto/NotoSansThai-Regular.ttf", [
+    "thai":    (NOTO_THAI, [
         "สวัสดีชาวโลก",
         "กรุงเทพ เชียงใหม่",
         "ภาษาไทย",
@@ -170,9 +192,9 @@ def teardown(name: str, volume: str) -> None:
 
 # ------------------------- per-endpoint probes --------------------------- #
 
-def probe_health(port: int, ep: str) -> tuple[str, str]:
+def probe_health(base: str, ep: str) -> tuple[str, str]:
     try:
-        r = requests.get(f"http://localhost:{port}{ep}", timeout=5)
+        r = requests.get(f"{base}{ep}", timeout=5)
         if r.status_code == 200:
             return ("PASS", f"200 body={r.text.strip()[:40]!r}")
         return ("FAIL", f"{r.status_code} body={r.text.strip()[:80]!r}")
@@ -180,9 +202,9 @@ def probe_health(port: int, ep: str) -> tuple[str, str]:
         return ("ERROR", f"{type(e).__name__}: {e}")
 
 
-def probe_metrics(port: int) -> tuple[str, str]:
+def probe_metrics(base: str) -> tuple[str, str]:
     try:
-        r = requests.get(f"http://localhost:{port}/metrics", timeout=5)
+        r = requests.get(f"{base}/metrics", timeout=5)
         if r.status_code == 200 and ("# HELP" in r.text or "# TYPE" in r.text):
             return ("PASS", f"200 bytes={len(r.content)}")
         return ("FAIL", f"{r.status_code} no prom body ({len(r.content)}B)")
@@ -207,10 +229,10 @@ def _text_from_results(body: dict) -> str:
     return ""
 
 
-def probe_ocr_raw(port: int, img_bytes: bytes, gt: str,
+def probe_ocr_raw(base: str, img_bytes: bytes, gt: str,
                   thr: float) -> tuple[str, float, str]:
     try:
-        r = requests.post(f"http://localhost:{port}/ocr/raw",
+        r = requests.post(f"{base}/ocr/raw",
                           data=img_bytes,
                           headers={"Content-Type": "image/png"}, timeout=60)
         if not r.ok:
@@ -222,11 +244,11 @@ def probe_ocr_raw(port: int, img_bytes: bytes, gt: str,
         return ("ERROR", 0.0, f"{type(e).__name__}: {e}")
 
 
-def probe_ocr_json(port: int, img_bytes: bytes, gt: str,
+def probe_ocr_json(base: str, img_bytes: bytes, gt: str,
                    thr: float) -> tuple[str, float, str]:
     payload = {"image": base64.b64encode(img_bytes).decode("ascii")}
     try:
-        r = requests.post(f"http://localhost:{port}/ocr",
+        r = requests.post(f"{base}/ocr",
                           json=payload, timeout=60)
         if not r.ok:
             return ("FAIL", 0.0, f"{r.status_code} {r.text[:80]}")
@@ -237,11 +259,11 @@ def probe_ocr_json(port: int, img_bytes: bytes, gt: str,
         return ("ERROR", 0.0, f"{type(e).__name__}: {e}")
 
 
-def probe_ocr_batch(port: int, img_bytes: bytes, gt: str,
+def probe_ocr_batch(base: str, img_bytes: bytes, gt: str,
                     thr: float) -> tuple[str, float, str]:
     payload = {"images": [base64.b64encode(img_bytes).decode("ascii")]}
     try:
-        r = requests.post(f"http://localhost:{port}/ocr/batch",
+        r = requests.post(f"{base}/ocr/batch",
                           json=payload, timeout=60)
         if not r.ok:
             return ("FAIL", 0.0, f"{r.status_code} {r.text[:80]}")
@@ -258,7 +280,7 @@ def probe_ocr_batch(port: int, img_bytes: bytes, gt: str,
         return ("ERROR", 0.0, f"{type(e).__name__}: {e}")
 
 
-def probe_ocr_pixels(port: int, img_bytes: bytes, gt: str,
+def probe_ocr_pixels(base: str, img_bytes: bytes, gt: str,
                      thr: float) -> tuple[str, float, str]:
     img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
     w, h = img.size
@@ -267,7 +289,7 @@ def probe_ocr_pixels(port: int, img_bytes: bytes, gt: str,
     bgr = bytearray(rgb)
     bgr[0::3], bgr[2::3] = rgb[2::3], rgb[0::3]
     try:
-        r = requests.post(f"http://localhost:{port}/ocr/pixels",
+        r = requests.post(f"{base}/ocr/pixels",
                           data=bytes(bgr),
                           headers={"Content-Type": "application/octet-stream",
                                    "X-Width": str(w),
@@ -282,11 +304,11 @@ def probe_ocr_pixels(port: int, img_bytes: bytes, gt: str,
         return ("ERROR", 0.0, f"{type(e).__name__}: {e}")
 
 
-def probe_ocr_pdf(port: int) -> tuple[str, str]:
+def probe_ocr_pdf(base: str) -> tuple[str, str]:
     if not PDF_FIXTURE.exists():
         return ("SKIP", f"no fixture at {PDF_FIXTURE}")
     try:
-        r = requests.post(f"http://localhost:{port}/ocr/pdf",
+        r = requests.post(f"{base}/ocr/pdf",
                           data=PDF_FIXTURE.read_bytes(),
                           headers={"Content-Type": "application/pdf"},
                           timeout=120)
@@ -300,6 +322,46 @@ def probe_ocr_pdf(port: int) -> tuple[str, str]:
 
 
 # ------------------------------ driver ----------------------------------- #
+
+def probe_all(base: str, image: str, lang: str, rendered: dict,
+              pdf_done_for: set[str]) -> list[tuple[str, str, str, str, str]]:
+    """Every endpoint probe against the server at `base`; rows as run_cell's."""
+    rows: list[tuple[str, str, str, str, str]] = []
+    # Language-agnostic endpoints: run once per image only.
+    key = f"{image}-agnostic"
+    is_first_for_image = key not in pdf_done_for
+    if is_first_for_image:
+        for ep in ["/health", "/health/live", "/health/ready"]:
+            s, n = probe_health(base, ep)
+            rows.append((image, "-", ep, s, n))
+        s, n = probe_metrics(base)
+        rows.append((image, "-", "/metrics", s, n))
+        pdf_done_for.add(key)
+
+    img_path, gt, thr = rendered[lang]
+    img_bytes = img_path.read_bytes()
+
+    s, sc, n = probe_ocr_raw(base, img_bytes, gt, thr)
+    rows.append((image, lang, "/ocr/raw", s, f"{sc:.2%} {n}"))
+
+    s, sc, n = probe_ocr_json(base, img_bytes, gt, thr)
+    rows.append((image, lang, "/ocr", s, f"{sc:.2%} {n}"))
+
+    s, sc, n = probe_ocr_batch(base, img_bytes, gt, thr)
+    rows.append((image, lang, "/ocr/batch", s, f"{sc:.2%} {n}"))
+
+    s, sc, n = probe_ocr_pixels(base, img_bytes, gt, thr)
+    rows.append((image, lang, "/ocr/pixels", s, f"{sc:.2%} {n}"))
+
+    # PDF: language-agnostic for English letter fixture. Run once per image.
+    pdf_key = f"{image}-pdf"
+    if pdf_key not in pdf_done_for:
+        s, n = probe_ocr_pdf(base)
+        rows.append((image, "-", "/ocr/pdf", s, n))
+        pdf_done_for.add(pdf_key)
+
+    return rows
+
 
 def run_cell(image: str, lang: str, port: int, rendered: dict,
              pdf_done_for: set[str]) -> list[tuple[str, str, str, str, str]]:
@@ -317,39 +379,7 @@ def run_cell(image: str, lang: str, port: int, rendered: dict,
         teardown(name, volume)
         return rows
 
-    # Language-agnostic endpoints: run once per image only.
-    key = f"{image}-agnostic"
-    is_first_for_image = key not in pdf_done_for
-    if is_first_for_image:
-        for ep in ["/health", "/health/live", "/health/ready"]:
-            s, n = probe_health(port, ep)
-            rows.append((image, "-", ep, s, n))
-        s, n = probe_metrics(port)
-        rows.append((image, "-", "/metrics", s, n))
-        pdf_done_for.add(key)
-
-    img_path, gt, thr = rendered[lang]
-    img_bytes = img_path.read_bytes()
-
-    s, sc, n = probe_ocr_raw(port, img_bytes, gt, thr)
-    rows.append((image, lang, "/ocr/raw", s, f"{sc:.2%} {n}"))
-
-    s, sc, n = probe_ocr_json(port, img_bytes, gt, thr)
-    rows.append((image, lang, "/ocr", s, f"{sc:.2%} {n}"))
-
-    s, sc, n = probe_ocr_batch(port, img_bytes, gt, thr)
-    rows.append((image, lang, "/ocr/batch", s, f"{sc:.2%} {n}"))
-
-    s, sc, n = probe_ocr_pixels(port, img_bytes, gt, thr)
-    rows.append((image, lang, "/ocr/pixels", s, f"{sc:.2%} {n}"))
-
-    # PDF: language-agnostic for English letter fixture. Run once per image.
-    pdf_key = f"{image}-pdf"
-    if pdf_key not in pdf_done_for:
-        s, n = probe_ocr_pdf(port)
-        rows.append((image, "-", "/ocr/pdf", s, n))
-        pdf_done_for.add(pdf_key)
-
+    rows += probe_all(f"http://localhost:{port}", image, lang, rendered, pdf_done_for)
     teardown(name, volume)
     return rows
 
@@ -358,19 +388,28 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--image", choices=["gpu", "cpu", "both"], default="both")
     parser.add_argument("--only", help="comma-separated language subset")
+    parser.add_argument("--base-url", help="probe an already running server at this "
+                        "URL instead of booting containers (e.g. the CI smoke test)")
+    parser.add_argument("--lang", default="latin",
+                        help="with --base-url: the language that server serves (OCR_LANG)")
     args = parser.parse_args()
+    if args.base_url:
+        args.only = args.lang
 
     only = set(args.only.split(",")) if args.only else None
     images = ("gpu", "cpu") if args.image == "both" else (args.image,)
+    if args.base_url:
+        images = ()  # nothing to boot: the server is already up
 
     # Pre-render images up front so we fail fast on missing fonts.
     rendered: dict[str, tuple[Path, str, float]] = {}
     for lang in SUPPORTED_LANGS:
         if only and lang not in only:
             continue
-        font, lines, thr = CASES[lang]
-        if not Path(font).exists():
-            print(f"[{lang}] SKIP — font missing: {font}")
+        fonts, lines, thr = CASES[lang]
+        font = first_font(fonts)
+        if font is None:
+            print(f"[{lang}] SKIP — no font among: {', '.join(fonts)}")
             continue
         rendered[lang] = (render(lang, font, lines), " ".join(lines), thr)
 
@@ -379,12 +418,16 @@ def main() -> int:
         print("No languages to test (missing fonts?)")
         return 1
 
-    print(f"Testing {len(langs)} langs x {len(images)} images. "
+    print(f"Testing {len(langs)} langs x {len(images) or 1} "
+          f"{'server' if args.base_url else 'images'}. "
           f"Fixture PDF: {PDF_FIXTURE.name if PDF_FIXTURE.exists() else 'MISSING'}")
 
     all_rows: list[tuple[str, str, str, str, str]] = []
     port = 18800
     pdf_done_for: set[str] = set()
+    if args.base_url:
+        print(f"\n=== {args.base_url} ({args.lang}) ===")
+        all_rows = probe_all(args.base_url.rstrip("/"), "url", args.lang, rendered, pdf_done_for)
     for image in images:
         for lang in langs:
             t0 = time.time()

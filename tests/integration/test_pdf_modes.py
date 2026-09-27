@@ -4,6 +4,9 @@ Covers the 4 extraction modes (ocr, geometric, auto, auto_verified) on
 small real-world PDF fixtures. Accuracy floors live in tests/accuracy/.
 """
 
+import collections
+import re
+
 import pytest
 import requests
 
@@ -90,12 +93,18 @@ class TestPdfModeSemantics:
         assert total > 0
 
     def test_auto_verified_not_worse_than_ocr(self, server_url, small_pdfs):
-        r_ocr = _post_pdf(server_url, small_pdfs["simple_letter"], "ocr")
-        r_av = _post_pdf(server_url, small_pdfs["simple_letter"], "auto_verified")
-        total_ocr = sum(len(p["results"]) for p in r_ocr.json()["pages"])
-        total_av = sum(len(p["results"]) for p in r_av.json()["pages"])
-        assert total_av >= total_ocr * 0.8, (
-            f"auto_verified ({total_av}) should not be much worse than ocr ({total_ocr})"
+        # Compared by content, not line count: a trusted text layer comes back
+        # as whole visual lines, far fewer than the detector's fragments while
+        # carrying the same text (or more).
+        def words(r):
+            text = " ".join(x["text"] for p in r.json()["pages"] for x in p["results"])
+            return collections.Counter(re.findall(r"\w+", text.lower()))
+
+        ocr = words(_post_pdf(server_url, small_pdfs["simple_letter"], "ocr"))
+        av = words(_post_pdf(server_url, small_pdfs["simple_letter"], "auto_verified"))
+        kept = sum((ocr & av).values()) / max(1, sum(ocr.values()))
+        assert kept >= 0.9, (
+            f"auto_verified keeps only {kept:.0%} of the words ocr reads"
         )
 
 

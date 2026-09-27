@@ -130,14 +130,22 @@ class TestStreamValidation:
         assert r.status_code == 400
 
     def test_connection_close_fails_loud(self, server_url, gpu_stream, hello_image):
-        """Drogon async streams need keep-alive; Connection: close would get an
-        empty 200 body (silent failure) — must 400 instead."""
+        """Drogon async streams need keep-alive; Connection: close straight to
+        the server would get an empty 200 body (silent failure), so the server
+        answers 400. Behind the image's nginx the header never reaches the
+        server (nginx keeps its own upstream connection alive) and the stream
+        completes. Either way, never an empty 200."""
         r = requests.post(f"{server_url}/ocr/stream",
                           data=pil_to_png_bytes(hello_image),
                           headers={"Content-Type": "image/png",
                                    "Connection": "close"}, timeout=15)
-        assert r.status_code == 400
-        assert "keep-alive" in r.json()["error"]["message"]
+        if r.status_code == 400:
+            assert "keep-alive" in r.json()["error"]["message"]
+        else:
+            assert r.status_code == 200
+            kinds = [json.loads(line)["event"] for line in r.text.splitlines() if line]
+            assert kinds[:1] == ["meta"] and kinds[-1:] == ["end"], kinds
+            assert "page" in kinds, kinds
 
     def test_structure_gates_still_apply(self, server_url, gpu_stream, hello_image):
         r = requests.post(f"{server_url}/ocr/stream?text=0&layout=1&tables=1",
