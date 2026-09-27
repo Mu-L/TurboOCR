@@ -15,34 +15,33 @@ using detail::utf16le_to_utf8;
 
 namespace {
 
-// A character's box in PDFium page space (bottom-left origin). The tight glyph
-// box first. The invisible text layer OCR tools write uses a glyphless font
-// whose empty glyphs give a flat tight box -- then the loose box from the
-// font's metrics, and for a font without metrics (FontBBox [0 0 0 0]) a box
-// built from the baseline origin and the font size. False for characters
-// PDFium generated without any geometry (inserted spaces).
-bool char_box(FPDF_TEXTPAGE tp, int idx, double &l, double &r, double &b,
-              double &t) {
-  const bool tight = FPDFText_GetCharBox(tp, idx, &l, &r, &b, &t) != 0;
+// A character's box in PDFium page space (bottom-left origin): its tight
+// glyph box, unless that is flat -- under a hundredth as tall as it is wide.
+// No real glyph is (the flattest, a dash or a rule, stays above a twentieth),
+// but every glyph of the glyphless font OCR tools write their invisible text
+// layer in is; for those, the loose box from the font's metrics, or for a font
+// without any (FontBBox [0 0 0 0]) a box built from the baseline origin and the
+// font size. Spaces keep their box, flat or not. False for characters PDFium
+// generated without any geometry (inserted spaces).
+bool char_box(FPDF_TEXTPAGE tp, int idx, bool space, double &l, double &r,
+              double &b, double &t) {
+  if (!FPDFText_GetCharBox(tp, idx, &l, &r, &b, &t) || r <= l || t <= b)
+    return false;
+  if (space || t - b >= 0.01 * (r - l)) return true;
   const double size = FPDFText_GetFontSize(tp, idx);
   const double min_h = size > 0 ? 0.25 * size : 0.0;
-  if (tight && r > l && t - b > min_h && t > b) return true;
   FS_RECTF loose{};
-  if (FPDFText_GetLooseCharBox(tp, idx, &loose) &&
-      loose.right > loose.left && loose.top - loose.bottom > min_h &&
-      loose.top > loose.bottom) {
-    if (!tight || r <= l) { l = loose.left; r = loose.right; }
+  if (FPDFText_GetLooseCharBox(tp, idx, &loose) && loose.top - loose.bottom > min_h) {
     b = loose.bottom;
     t = loose.top;
     return true;
   }
   double ox = 0, oy = 0;
-  if (tight && r > l && size > 0 && FPDFText_GetCharOrigin(tp, idx, &ox, &oy)) {
+  if (size > 0 && FPDFText_GetCharOrigin(tp, idx, &ox, &oy)) {
     b = oy - 0.2 * size;
     t = oy + 0.8 * size;
-    return true;
   }
-  return tight && r > l && t > b;
+  return true;
 }
 
 }  // namespace
@@ -209,12 +208,12 @@ PdfPageText PdfDocument::extract_page(int page_index) const {
     double cl = 0, cr = 0, cb = 0, ct = 0;
     // Generated chars (inserted spaces) have no box — keep their text, skip
     // them in the bbox union.
-    const bool boxed = char_box(ph->textpage, idx, cl, cr, cb, ct);
+    const bool space = is_word_space(u);
+    const bool boxed = char_box(ph->textpage, idx, space, cl, cr, cb, ct);
     // Words: a space ends one; a CJK character is one on its own; so does a
     // jump down and back to the next visual line -- a hyphenated word PDFium
     // joins across a line break ("founda-" + "tion") -- so each part keeps a
     // true box. (A superscript sits higher and runs on: no break.)
-    const bool space = is_word_space(u);
     const bool standalone = is_standalone_word_char(u);
     const bool new_row = boxed && word_box && ct <= pbottom && cl < pleft;
     if (space || standalone || new_row) flush_word();
