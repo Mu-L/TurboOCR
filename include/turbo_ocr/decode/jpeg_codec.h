@@ -46,6 +46,15 @@ constexpr int kIncompleteBitstream = 10;
   return "?";
 }
 
+// nvJPEG decodes 1-component (grey) and 3-component (colour) JPEG. A
+// 4-component (CMYK / YCCK) bitstream is outside its format support, so it
+// goes to the host codec by specification: decided from the header, because
+// the hybrid backend reports it as INVALID_PARAMETER, which
+// classify_nvjpeg_status rightly reads as a device fault.
+[[nodiscard]] constexpr bool nvjpeg_decodes_components(int n) noexcept {
+  return n == 1 || n == 3;
+}
+
 // JPEG magic (SOI marker). The only sniff the routes need to pick a path.
 [[nodiscard]] constexpr bool looks_like_jpeg(const unsigned char *data, size_t len) noexcept {
   return data != nullptr && len >= 2 && data[0] == 0xFF && data[1] == 0xD8;

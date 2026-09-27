@@ -55,6 +55,22 @@ class TestOcrEndpoint:
         assert r.status_code == 200
         assert "results" in r.json()
 
+    def test_cmyk_jpeg(self, server_url, hello_image):
+        """CMYK JPEG is outside nvJPEG's format support; the host codec decodes
+        it by specification, raw and base64 alike, never a GPU fault."""
+        buf = io.BytesIO()
+        hello_image.convert("CMYK").save(buf, format="JPEG", quality=90)
+        jpg = buf.getvalue()
+        raw = requests.post(f"{server_url}/ocr/raw", data=jpg,
+                            headers={"Content-Type": "image/jpeg"}, timeout=10)
+        b64 = requests.post(f"{server_url}/ocr",
+                            json={"image": base64.b64encode(jpg).decode("ascii")}, timeout=10)
+        assert raw.status_code == 200, raw.text[:200]
+        assert b64.status_code == 200, b64.text[:200]
+        texts = lambda r: [item["text"] for item in r.json()["results"]]
+        assert texts(raw) == texts(b64)
+        assert texts(raw), "CMYK image decoded to nothing"
+
     def test_detects_known_text(self, server_url):
         """OCR should detect text that we rendered on the image."""
         img = make_text_image("HELLO", width=400, height=100, font_size=50)

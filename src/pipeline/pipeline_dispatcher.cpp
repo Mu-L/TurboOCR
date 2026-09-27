@@ -1,4 +1,5 @@
 #include "turbo_ocr/pipeline/pool/pipeline_dispatcher.h"
+#include "turbo_ocr/server/bootstrap/pool_sizing.h"
 
 #include <cstdlib>
 #include <format>
@@ -214,18 +215,41 @@ std::unique_ptr<PipelineDispatcher> make_pipeline_dispatcher(
     int pool_size, const std::string &det_model, const std::string &rec_model,
     const std::string &rec_dict, const std::string &cls_model,
     const std::string &layout_model, const std::string &doc_ori_model,
-    const DetInferConfig &det_cfg) {
+    const DetInferConfig &det_cfg, bool fit_to_footprint) {
 
   if (pool_size <= 0) [[unlikely]]
     throw std::invalid_argument(
         std::format("[Dispatcher] Invalid pool_size={}, must be > 0", pool_size));
 
+  size_t free_before = 0, total = 0;
+  if (fit_to_footprint && cudaMemGetInfo(&free_before, &total) != cudaSuccess) {
+    (void)cudaGetLastError();
+    free_before = 0;
+  }
   std::vector<std::unique_ptr<GpuPipelineEntry>> entries;
   for (int i = 0; i < pool_size; ++i) {
     if (auto e = build_one_pipeline(i, det_model, rec_model, rec_dict,
                                     cls_model, layout_model,
                                     doc_ori_model, det_cfg))
       entries.push_back(std::move(e));
+    // The first pipeline, warmed up, shows what one really costs.
+    if (i == 0 && free_before > 0 && !entries.empty()) {
+      size_t free_after = 0;
+      if (cudaMemGetInfo(&free_after, &total) != cudaSuccess) {
+        (void)cudaGetLastError();
+      } else if (free_after < free_before) {
+        const size_t first = free_before - free_after;
+        const int fits =
+            turbo_ocr::server::fit_pipeline_count(pool_size, first, free_after);
+        if (fits < pool_size) {
+          TOCR_LOG_WARN("Pipeline pool sized to the measured VRAM footprint",
+                        "tier_pool_size", pool_size, "pool_size", fits,
+                        "first_pipeline_mb", static_cast<long long>(first >> 20),
+                        "free_mb", static_cast<long long>(free_after >> 20));
+          pool_size = fits;
+        }
+      }
+    }
   }
 
   if (entries.empty()) [[unlikely]]

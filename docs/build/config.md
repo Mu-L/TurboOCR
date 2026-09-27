@@ -133,7 +133,7 @@ the `*_ONNX` overrides below are only needed for a non-default location.
 
 | Variable | Default | Description |
 |---|---|---|
-| `PIPELINE_POOL_SIZE` | auto | Concurrent GPU pipelines (~1.4 GB VRAM each). Unset → GPU auto-detects from VRAM, CPU uses 4. Bounds `[1, 4096]`. CLI: `--pool-size` (`0` = auto). |
+| `PIPELINE_POOL_SIZE` | auto | Concurrent GPU pipelines (about 3.5 GB VRAM each on the tiny models, 5+ GB on medium). Unset → the GPU picks a count by total VRAM (at most 5), then builds only as many as the first pipeline's measured footprint fits in free VRAM; CPU uses 4. An explicit value is built exactly, or startup fails. Bounds `[1, 4096]`. CLI: `--pool-size` (`0` = auto). |
 | `HTTP_THREADS` | `clamp(pool*4, 16, 64)` | Work-pool threads in front of the GPU replica pool (decode, JSON, PDF joins). Four per replica, 16 to 64: throughput is flat from 20 to 48 threads on an RTX 5090, and every extra thread carries its own scratch buffers and an allocator arena's high-water mark of freed request buffers (host RSS that never returns). Bounds `[1, 4096]`. CLI: `--http-threads` (`0` = auto). |
 | `PDF_DAEMONS` | `16` (CPU: `4`) | PDF render daemon processes. Bounds `[1, 1024]`. CLI: `--pdf-daemons`. |
 | `PDF_WORKERS` | `4` (CPU: `2`) | PDF render workers. Bounds `[1, 1024]`. Exceeding `PDF_DAEMONS` warns (excess idle). CLI: `--pdf-workers`. |

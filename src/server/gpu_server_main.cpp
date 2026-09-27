@@ -93,7 +93,8 @@ int main(int argc, char **argv) try {
 
   auto dispatcher = turbo_ocr::pipeline::make_pipeline_dispatcher(
       stages.pool_size, stages.det_model, stages.rec_model, stages.rec_dict,
-      stages.cls_model, layout_model, doc_ori_model, cfg.det_cfg);
+      stages.cls_model, layout_model, doc_ori_model, cfg.det_cfg,
+      /*fit_to_footprint=*/stages.pool_size_auto);
   // Some pipelines may have failed to init (logged); key downstream sizing
   // off the count actually built.
   int pool_size = static_cast<int>(dispatcher->worker_count());

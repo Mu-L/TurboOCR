@@ -7,6 +7,10 @@
 
 namespace turbo_ocr::server {
 
+// VRAM left free when sizing the pool, so the renderer daemons / CUDA context
+// / OS don't get squeezed to the byte.
+inline constexpr size_t kVramHeadroomBytes = size_t{1} << 30;
+
 // Pipeline pool auto-sizing policy. Throughput is GPU-compute-bound on this
 // stack: a clean pool sweep (RTX 5090, FUNSD) plateaus by ~5 pipelines
 // (5→278, 8→263, 10→258 img/s) because the det/rec kernels already saturate
@@ -35,9 +39,6 @@ namespace turbo_ocr::server {
   // and never below 1, so a healthy 32 GB card with the tiny model still
   // picks 5 (a few hundred MB per pipeline against ~31 GB free).
   constexpr size_t kPerPipelineFootprintBytes = size_t{2} << 30;  // 2 GiB
-  // Leave a 1 GiB headroom so the renderer daemons / CUDA context / OS
-  // don't get squeezed to the byte.
-  constexpr size_t kVramHeadroomBytes = size_t{1} << 30;
   size_t budget = free_mem > kVramHeadroomBytes ? free_mem - kVramHeadroomBytes : 0;
   int fits = static_cast<int>(budget / kPerPipelineFootprintBytes);
   if (fits < 1) fits = 1;
@@ -49,6 +50,27 @@ namespace turbo_ocr::server {
   }
   TOCR_LOG_INFO("Auto-detected pipeline pool size", "pool_size", pool_size, "vram_gb", vram_gb);
   return pool_size;
+}
+
+// What a pipeline grows by after warmup (per-replica decoders, scratch sized
+// by the first large requests): measured ~0.36 GiB per replica on the tiny
+// models over a mixed-traffic soak.
+inline constexpr size_t kPipelineRuntimeReserveBytes = size_t{512} << 20;
+
+// Auto mode, once the first pipeline is built and warmed up: how many the pool
+// gets. The fixed 2 GiB guess above is right for the tiny models but the
+// medium ones (det + rec scratch, 18,710 recognizer classes) take ~5 GiB, so a
+// card with room for three pipelines ran out of memory building the fourth and
+// the server never started. Each further pipeline costs what the first one
+// measurably took (`first_bytes`) plus the runtime reserve; the headroom stays
+// free. Only lowers `cap`, never below 1; no measurement keeps `cap`.
+[[nodiscard]] inline int fit_pipeline_count(int cap, size_t first_bytes,
+                                            size_t free_after) {
+  if (cap <= 1 || first_bytes == 0) return std::max(cap, 1);
+  const size_t keep = kVramHeadroomBytes + kPipelineRuntimeReserveBytes;
+  const size_t budget = free_after > keep ? free_after - keep : 0;
+  const size_t more = budget / (first_bytes + kPipelineRuntimeReserveBytes);
+  return static_cast<int>(std::min<size_t>(1 + more, static_cast<size_t>(cap)));
 }
 
 // Work-pool threads in front of the replica pool: they decode, parse and

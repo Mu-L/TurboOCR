@@ -102,6 +102,7 @@ GpuStages load_gpu_stages(const ServerConfig &cfg) {
   if (cfg.pipeline_pool_size) {
     s.pool_size = *cfg.pipeline_pool_size;
   } else {
+    s.pool_size_auto = true;
     size_t free_mem = 0, total_mem = 0;
     if (cudaMemGetInfo(&free_mem, &total_mem) == cudaSuccess)
       s.pool_size = compute_pipeline_pool_size(free_mem, total_mem);

@@ -222,6 +222,16 @@ public:
     if (!is_jpeg(data, len)) return JpegDecodeStatus::Unsupported;
     bind_calling_thread_();
 
+    int n_components = 0;
+    nvjpegChromaSubsampling_t subsampling;
+    int widths[NVJPEG_MAX_COMPONENT], heights[NVJPEG_MAX_COMPONENT];
+    if (nvjpegGetImageInfo(handle_, data, len, &n_components, &subsampling,
+                           widths, heights) == NVJPEG_STATUS_SUCCESS &&
+        !nvjpeg_decodes_components(n_components)) {
+      last_nvjpeg_status_ = nvjpeg_status::kJpegNotSupported;
+      return JpegDecodeStatus::Unsupported;
+    }
+
     nvjpegImage_t output;
     output.channel[0] = static_cast<unsigned char *>(d_output);
     output.pitch[0] = static_cast<unsigned int>(pitch);
@@ -280,7 +290,8 @@ public:
       nvjpegChromaSubsampling_t subsampling;
       int widths[NVJPEG_MAX_COMPONENT], heights[NVJPEG_MAX_COMPONENT];
       if (nvjpegGetImageInfo(handle_, data, len, &nComponents, &subsampling,
-                             widths, heights) != NVJPEG_STATUS_SUCCESS)
+                             widths, heights) != NVJPEG_STATUS_SUCCESS ||
+          !nvjpeg_decodes_components(nComponents))
         return fallback_single();
 
       dims[i].w = widths[0];

@@ -162,8 +162,10 @@ struct PdfJobResult {
 #ifndef USE_CPU_ONLY
 // GPU PDF job. Submits page work directly onto the dispatcher (H3). Page tasks
 // co-own the sink + StreamHandle by shared_ptr so a task abandoned on a
-// deadline overrun stays memory-safe. Backpressure is the dispatcher queue
-// depth (PoolExhaustedError -> status=Dropped -> caller 503 / RES_EXHAUSTED).
+// deadline overrun stays memory-safe. A job queues a bounded window of pages
+// and renders ahead only as they finish; a queue filled by other requests
+// still drops pages (PoolExhaustedError -> status=Dropped -> caller 503 /
+// RES_EXHAUSTED).
 [[nodiscard]] PdfJobResult run_pdf_job(PipelineDispatcher &dispatcher,
                                        render::PdfRenderer &pdf_renderer,
                                        const uint8_t *pdf_data, size_t pdf_len,

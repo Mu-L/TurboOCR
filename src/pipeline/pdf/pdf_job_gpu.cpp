@@ -8,6 +8,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <future>
 #include <memory>
 #include <mutex>
@@ -143,11 +144,48 @@ void ocr_single_page(GpuPipelineEntry &e, PdfPageSink &sink,
   }
 }
 
+// Pages of one job in the GPU queue at once. Rendering outpaces OCR, so
+// submitting every page as it renders fills the shared queue on a long PDF and
+// the pages past its depth are dropped (the whole job then fails SERVER_BUSY).
+// The render callback waits for a free slot instead -- the CPU job's inline
+// OCR is the same backpressure -- which also leaves queue room for other
+// requests.
+struct PageWindow {
+  explicit PageWindow(int slots) : free(slots) {}
+  std::mutex m;
+  std::condition_variable cv;
+  int free;
+
+  void release() {
+    {
+      std::lock_guard lock(m);
+      ++free;
+    }
+    cv.notify_one();
+  }
+};
+
+// Frees a page task's slot when the task body ends, however it ends. Not tied
+// to the task's lifetime: a packaged_task's callable lives in the shared state
+// its future also holds, i.e. until the job ends.
+struct PageSlotRelease {
+  PageWindow &window;
+  ~PageSlotRelease() { window.release(); }
+};
+
+// Slots per job: enough queued pages to keep every GPU worker fed.
+[[nodiscard]] int page_window_slots(const PipelineDispatcher &dispatcher) {
+  return static_cast<int>(std::max<size_t>(8, 4 * dispatcher.worker_count()));
+}
+
 // GPU streamed render: per rendered page, submit a single-page OCR task
 // chunk or submit a single-page task directly onto the dispatcher (H3 — no
 // per-page OS thread). `sink` and `stream_handle` are shared_ptrs captured BY
 // VALUE into every task so an abandoned (timed-out) task safely outlives this
 // call: the sink and the scratch tmpdir live until the last task drops them.
+// At most page_window_slots() pages are queued at once; a render waits up to
+// `slot_wait_ms` (0 = unbounded) for a slot, and past that sets `timed_out`
+// and submits nothing more.
 // Populates *stream_handle with the render result and returns its num_pages.
 [[nodiscard]] int run_streamed_render_gpu(
     PipelineDispatcher &dispatcher, render::PdfRenderer &pdf_renderer,
@@ -157,7 +195,8 @@ void ocr_single_page(GpuPipelineEntry &e, PdfPageSink &sink,
     const std::shared_ptr<render::PdfRenderer::StreamHandle> &stream_handle,
     std::vector<uint8_t> &need_render,
     std::vector<std::future<void>> &page_futures, std::mutex &futures_mutex,
-    std::vector<int> &dropped_pages) {
+    std::vector<int> &dropped_pages, long slot_wait_ms, bool &timed_out) {
+  auto window = std::make_shared<PageWindow>(page_window_slots(dispatcher));
   auto handle = pdf_renderer.render_streamed(pdf_data, pdf_len, sink->dpi,
       [&](int page_idx, std::string ppm_path) {
         bool is_geometric = false;
@@ -179,15 +218,34 @@ void ocr_single_page(GpuPipelineEntry &e, PdfPageSink &sink,
         }
 
         (void)is_geometric;
+        if (timed_out) return;
+        {
+          std::unique_lock lock(window->m);
+          const auto has_slot = [&] { return window->free > 0; };
+          if (slot_wait_ms > 0) {
+            if (!window->cv.wait_for(lock, std::chrono::milliseconds(slot_wait_ms),
+                                     has_slot)) {
+              TOCR_LOG_ERROR("No page finished within the request deadline",
+                             "route", "/ocr/pdf", "page", page_idx);
+              timed_out = true;
+              return;
+            }
+          } else {
+            window->cv.wait(lock, has_slot);
+          }
+          --window->free;
+        }
         std::future<void> fut;
         try {
           fut = dispatcher.submit(
-              [sink, stream_handle, layout_enabled, want_reading_order, page_idx,
-               path = std::move(ppm_path)](auto &e) {
+              [sink, stream_handle, window, layout_enabled, want_reading_order,
+               page_idx, path = std::move(ppm_path)](auto &e) {
+                const PageSlotRelease release{*window};
                 ocr_single_page(e, *sink, layout_enabled, want_reading_order,
                                 page_idx, path);
               });
         } catch (const turbo_ocr::PoolExhaustedError &) {
+          window->release();
           TOCR_LOG_WARN("GPU queue full, dropping page", "route", "/ocr/pdf",
                         "page", page_idx);
           dropped_pages.push_back(page_idx);
@@ -209,7 +267,8 @@ void ocr_single_page(GpuPipelineEntry &e, PdfPageSink &sink,
 // co-own the sink + StreamHandle by shared_ptr, so a task abandoned when its
 // future overruns the job-wide deadline (request_timeout_ms) is memory-safe:
 // the shared state outlives this call until that task finishes. Backpressure is
-// the dispatcher queue depth: PoolExhaustedError mid-stream sets status=Dropped
+// the per-job page window, so a PDF of any length runs; a queue filled by OTHER
+// requests still raises PoolExhaustedError mid-stream -> status=Dropped
 // (caller -> SERVER_BUSY).
 [[nodiscard]] PdfJobResult run_pdf_job(
     PipelineDispatcher &dispatcher, render::PdfRenderer &pdf_renderer,
@@ -261,13 +320,15 @@ void ocr_single_page(GpuPipelineEntry &e, PdfPageSink &sink,
   std::mutex futures_mutex;
   std::vector<std::future<void>> page_futures;
   int num_pages = 0;
+  bool render_timed_out = false;
 
   if (any_need_render) {
     try {
       num_pages = detail::run_streamed_render_gpu(
           dispatcher, pdf_renderer, pdf_data, pdf_len, opts.want_layout,
           opts.want_reading_order, mode, sink, stream_handle, need_render,
-          page_futures, futures_mutex, dropped);
+          page_futures, futures_mutex, dropped, opts.request_timeout_ms,
+          render_timed_out);
     } catch (const std::exception &e) {
       // No drain needed: every in-flight page task co-owns the sink/handle via
       // shared_ptr, so abandoning the futures here is memory-safe (a still-running
@@ -304,8 +365,9 @@ void ocr_single_page(GpuPipelineEntry &e, PdfPageSink &sink,
           : 0;
   const auto job_deadline = std::chrono::steady_clock::now() +
                             std::chrono::milliseconds(job_budget);
-  bool deadline_exceeded = false;
+  bool deadline_exceeded = render_timed_out;
   for (auto &f : page_futures) {
+    if (deadline_exceeded) break;
     try {
       if (job_budget > 0) {
         const auto now = std::chrono::steady_clock::now();

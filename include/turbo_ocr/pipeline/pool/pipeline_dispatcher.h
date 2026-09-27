@@ -193,12 +193,16 @@ private:
     const std::string &layout_model, const std::string &doc_ori_model,
     const DetInferConfig &det_cfg);
 
+/// `fit_to_footprint` (auto-sized pools): after the first pipeline is built,
+/// build only as many more as its measured VRAM footprint leaves room for
+/// (server::fit_pipeline_count). An explicit pool size builds exactly that.
 [[nodiscard]] std::unique_ptr<PipelineDispatcher> make_pipeline_dispatcher(
     int pool_size, const std::string &det_model, const std::string &rec_model,
     const std::string &rec_dict, const std::string &cls_model = "",
     const std::string &layout_model = "",
     const std::string &doc_ori_model = "",
     const DetInferConfig &det_cfg = {turbo_ocr::detection::kDetResizeDefault,
-                                     turbo_ocr::detection::kDbDefaults});
+                                     turbo_ocr::detection::kDbDefaults},
+    bool fit_to_footprint = false);
 
 } // namespace turbo_ocr::pipeline

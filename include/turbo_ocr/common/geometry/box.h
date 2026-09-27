@@ -64,16 +64,55 @@ clamped_crop_rect(const Box &b, int cols, int rows) noexcept {
   return static_cast<int64_t>(h) * h >= static_cast<int64_t>(w) * w * 225 / 100;
 }
 
-// Sort boxes top-to-bottom, left-to-right (in-place, deterministic)
-// Quantize Y to line bands so boxes on the same line sort by X.
+// Sort boxes top-to-bottom, left-to-right (in-place). The result depends only
+// on the set of boxes, never on the order they arrive in (the GPU detector's
+// order varies run to run).
+//
+// Boxes whose tops are within kSameLineThreshold of their line's top form one
+// line and sort by X. Quantizing Y into fixed y/10 bands instead makes the
+// tolerance depend on where a box sits relative to a multiple of 10 (tops 29
+// and 34 are two lines, 30 and 34 one). Comparing with a tolerance directly
+// is not transitive (a~b, b~c, but a<c), which is undefined behaviour in
+// std::sort.
 inline void sorted_boxes(std::vector<Box> &dt_boxes) {
   static constexpr int kSameLineThreshold = 10;
-  std::ranges::stable_sort(dt_boxes, [](const Box &a, const Box &b) {
-    int ya = a[0][1] / kSameLineThreshold;
-    int yb = b[0][1] / kSameLineThreshold;
-    if (ya != yb) return ya < yb;
-    return a[0][0] < b[0][0];
+  if (dt_boxes.size() < 2) return;
+
+  // Pass 1: order by top edge so line members are adjacent; the whole box
+  // breaks the remaining ties.
+  std::ranges::sort(dt_boxes, [](const Box &a, const Box &b) {
+    if (a[0][1] != b[0][1]) return a[0][1] < b[0][1];
+    if (a[0][0] != b[0][0]) return a[0][0] < b[0][0];
+    return a < b;
   });
+
+  // Pass 2: walk in Y order, opening a new line when the gap from the CURRENT
+  // LINE'S TOP exceeds the threshold. Measuring from the line's own top (not
+  // from the previous box) stops a run of boxes each 9px below the last from
+  // chaining into one arbitrarily tall "line".
+  std::vector<int> line(dt_boxes.size(), 0);
+  int line_top = dt_boxes[0][0][1];
+  for (std::size_t i = 1; i < dt_boxes.size(); ++i) {
+    if (dt_boxes[i][0][1] - line_top > kSameLineThreshold) {
+      line[i] = line[i - 1] + 1;
+      line_top = dt_boxes[i][0][1];
+    } else {
+      line[i] = line[i - 1];
+    }
+  }
+
+  // Pass 3: (line, x), ties keep the pass-1 order. Indices are permuted
+  // alongside so the grouping computed above survives the reorder.
+  std::vector<std::size_t> idx(dt_boxes.size());
+  for (std::size_t i = 0; i < idx.size(); ++i) idx[i] = i;
+  std::ranges::stable_sort(idx, [&](std::size_t a, std::size_t b) {
+    if (line[a] != line[b]) return line[a] < line[b];
+    return dt_boxes[a][0][0] < dt_boxes[b][0][0];
+  });
+  std::vector<Box> out;
+  out.reserve(dt_boxes.size());
+  for (std::size_t i : idx) out.push_back(dt_boxes[i]);
+  dt_boxes.swap(out);
 }
 
 

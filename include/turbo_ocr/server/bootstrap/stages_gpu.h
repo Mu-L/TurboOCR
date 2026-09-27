@@ -25,6 +25,7 @@ struct GpuStages {
   std::string layout_model;
   std::string doc_ori_model;
   int pool_size = 4;
+  bool pool_size_auto = false;  // no explicit PIPELINE_POOL_SIZE / --pool-size
 };
 
 // Fail-fast model-path validation. MUST run before the PdfRenderer fork()s

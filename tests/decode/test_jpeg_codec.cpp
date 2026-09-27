@@ -7,6 +7,7 @@
 using turbo_ocr::decode::classify_nvjpeg_status;
 using turbo_ocr::decode::JpegDecodeStatus;
 using turbo_ocr::decode::looks_like_jpeg;
+using turbo_ocr::decode::nvjpeg_decodes_components;
 using turbo_ocr::decode::to_string;
 namespace ns = turbo_ocr::decode::nvjpeg_status;
 
@@ -20,6 +21,14 @@ TEST_CASE("only bitstream problems count as unsupported; every other nvJPEG stat
   for (int st : {1, 2, 5, 6, 7, 8, 9, 42, -1})
     CHECK(classify_nvjpeg_status(st) == JpegDecodeStatus::Failed);
   static_assert(classify_nvjpeg_status(5) == JpegDecodeStatus::Failed, "constexpr");
+}
+
+TEST_CASE("nvJPEG takes grey and colour JPEG; CMYK goes to the host codec", "[jpeg_codec]") {
+  CHECK(nvjpeg_decodes_components(1));
+  CHECK(nvjpeg_decodes_components(3));
+  CHECK_FALSE(nvjpeg_decodes_components(4));  // CMYK / YCCK
+  CHECK_FALSE(nvjpeg_decodes_components(2));
+  CHECK_FALSE(nvjpeg_decodes_components(0));
 }
 
 TEST_CASE("statuses have stable names for logs", "[jpeg_codec]") {
